@@ -1,0 +1,29 @@
+{
+  "name": "bb-plugin-discord",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.36",
+    "bbPluginSdk": "^0.4.1"
+  },
+  "bb": {
+    "name": "Discord",
+    "description": "Drive BB agent threads from a Discord server: start, chat, and receive lifecycle updates in one place.",
+    "branding": {
+      "icon": "MessageCircle"
+    },
+    "server": "./server.ts"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit"
+  }
+}
