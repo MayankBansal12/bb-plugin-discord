@@ -1053,8 +1053,11 @@ export default async function plugin(bb: BbPluginApi) {
         cached = values;
 
         if (!values.botToken) {
-          bb.log.warn(
-            "Discord is not configured: add the bot token in Settings → Plugins → Discord, then run `bb discord pair`.",
+          // A missing token is a standing configuration gap, which is exactly
+          // what the SDK's needs-configuration state is for; it clears on the
+          // next load, so it does not go stale the way a pairing prompt would.
+          bb.status.needsConfiguration(
+            "Add your Discord bot token in Settings → Plugins → Discord, then run `bb discord pair`.",
           );
           await waitForWake(signal);
           continue;

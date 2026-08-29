@@ -139,7 +139,7 @@ Configuration mistakes surface as sentences, not stack traces:
 
 Saving a new token reconnects the gateway on its own — no `bb plugin reload discord`.
 
-Pairing and connection guidance appears in `bb discord pair`, `bb discord status`, and the plugin log. The plugin deliberately does not set BB's `needs-configuration` badge: the current SDK can set that state but cannot clear it after successful pairing or a settings fix. A badge left by an older loaded version can only disappear on the next plugin load, which is the SDK's built-in clearing point.
+BB's `needs-configuration` badge is used only for a missing bot token — a standing gap that the SDK's clear-on-next-load behaviour suits. Pairing guidance deliberately does not use it, because the SDK cannot clear that state once pairing succeeds, which would leave a false warning. Pairing and connection guidance appears in `bb discord pair`, `bb discord status`, and the plugin log instead.
 
 ## Development and verification
 
