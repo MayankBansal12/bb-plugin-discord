@@ -78,6 +78,50 @@ export function verifyPairingCode(
   return { ok: true };
 }
 
+// ---------------------------------------------------------------------------
+// Stored authorization state
+// ---------------------------------------------------------------------------
+
+export interface PairingStateDatabase {
+  prepare(sql: string): { run(...params: unknown[]): unknown };
+  transaction<T extends () => void>(operation: T): T;
+}
+
+/** Remove the pairing and every guild-bound bridge row in one transaction. */
+export function clearStoredPairingState(db: PairingStateDatabase): void {
+  db.transaction(() => {
+    db.prepare("DELETE FROM discord_pairing WHERE id = 1").run();
+    db.prepare("DELETE FROM discord_allowed_users").run();
+    db.prepare("DELETE FROM discord_threads").run();
+    db.prepare("DELETE FROM discord_posted_replies").run();
+    db.prepare("DELETE FROM discord_posted_interactions").run();
+  })();
+}
+
+/** Legacy authorization is active only when both legacy settings are present. */
+export function legacyAuthorizationGuildId(
+  configuredGuildId: string | undefined,
+  configuredAllowedUserIds: readonly string[],
+): string | null {
+  const guildId = configuredGuildId?.trim();
+  return guildId && configuredAllowedUserIds.length > 0 ? guildId : null;
+}
+
+export function resolveEffectiveGuildId(
+  pairedGuildId: string | undefined,
+  legacyGuildId: string | null,
+): string | null {
+  return pairedGuildId ?? legacyGuildId;
+}
+
+/** Lifecycle output is valid only for a mapping in the currently authorized guild. */
+export function isActiveMappedGuild(
+  mappedGuildId: string,
+  effectiveGuildId: string | null,
+): boolean {
+  return effectiveGuildId !== null && mappedGuildId === effectiveGuildId;
+}
+
 export type PairingFailureReason = "no-code" | "expired" | "mismatch";
 
 export function pairingFailureMessage(reason: PairingFailureReason): string {

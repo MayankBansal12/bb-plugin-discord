@@ -6,10 +6,13 @@ import {
   applicationIdFromToken,
   buildInviteUrl,
   classifyDiscordError,
+  clearStoredPairingState,
   formatPairingCode,
   FULL_PERMISSIONS,
   generatePairingCode,
   invitePermissions,
+  isActiveMappedGuild,
+  legacyAuthorizationGuildId,
   MESSAGE_PERMISSIONS,
   normalizePairingCode,
   PAIRING_CODE_TTL_MS,
@@ -17,6 +20,7 @@ import {
   parsePairCommand,
   permissionBits,
   resolveSpawnPermissionMode,
+  resolveEffectiveGuildId,
   retryDelayMs,
   verifyPairingCode,
 } from "./pairing.js";
@@ -58,6 +62,54 @@ test("pairing codes are single-use, time-bound, and exact", () => {
     reason: "no-code",
   });
   assert.match(pairingFailureMessage("expired"), /expired/i);
+});
+
+test("unpair clears authorization and every guild-bound forwarding row", () => {
+  const statements: string[] = [];
+  let transactions = 0;
+  clearStoredPairingState({
+    prepare(sql) {
+      return {
+        run() {
+          statements.push(sql);
+        },
+      };
+    },
+    transaction(operation) {
+      return (() => {
+        transactions += 1;
+        operation();
+      }) as typeof operation;
+    },
+  });
+
+  assert.equal(transactions, 1);
+  assert.deepEqual(statements, [
+    "DELETE FROM discord_pairing WHERE id = 1",
+    "DELETE FROM discord_allowed_users",
+    "DELETE FROM discord_threads",
+    "DELETE FROM discord_posted_replies",
+    "DELETE FROM discord_posted_interactions",
+  ]);
+});
+
+test("legacy settings remain authoritative until the user clears them", () => {
+  assert.equal(
+    legacyAuthorizationGuildId(" guild-legacy ", ["user-1"]),
+    "guild-legacy",
+  );
+  assert.equal(legacyAuthorizationGuildId("guild-legacy", []), null);
+  assert.equal(
+    resolveEffectiveGuildId("guild-paired", "guild-legacy"),
+    "guild-paired",
+  );
+  assert.equal(resolveEffectiveGuildId(undefined, "guild-legacy"), "guild-legacy");
+});
+
+test("lifecycle forwarding requires a current pairing for the mapped guild", () => {
+  assert.equal(isActiveMappedGuild("guild-1", "guild-1"), true);
+  assert.equal(isActiveMappedGuild("guild-1", null), false);
+  assert.equal(isActiveMappedGuild("guild-1", "guild-2"), false);
 });
 
 test("invite permission bits match discord.js", () => {

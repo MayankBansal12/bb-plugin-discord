@@ -11,11 +11,15 @@ import {
 import { DiscordClient, type DiscordInboundMessage } from "./discord.js";
 import {
   classifyDiscordError,
+  clearStoredPairingState,
   formatPairingCode,
   generatePairingCode,
   inviteUrlFromToken,
+  isActiveMappedGuild,
+  legacyAuthorizationGuildId,
   pairingFailureMessage,
   parsePairCommand,
+  resolveEffectiveGuildId,
   resolveSpawnPermissionMode,
   retryDelayMs,
   verifyPairingCode,
@@ -245,8 +249,7 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   const clearPairing = (): void => {
-    db.prepare("DELETE FROM discord_pairing WHERE id = 1").run();
-    db.prepare("DELETE FROM discord_allowed_users").run();
+    clearStoredPairingState(db);
   };
 
   const extraAllowedUsers = (): string[] =>
@@ -260,14 +263,14 @@ export default async function plugin(bb: BbPluginApi) {
    * Pairing is the normal path; the legacy `guildId` + `allowedUserIds`
    * settings still work so upgrades do not lose a working configuration.
    */
-  const effectiveGuildId = (): string | null => {
-    const pairing = getPairing();
-    if (pairing) return pairing.guild_id;
-    const legacy = cached.guildId?.trim();
-    return legacy && parseDiscordIds(cached.allowedUserIds).length > 0
-      ? legacy
-      : null;
-  };
+  const legacyGuildId = (): string | null =>
+    legacyAuthorizationGuildId(
+      cached.guildId,
+      parseDiscordIds(cached.allowedUserIds),
+    );
+
+  const effectiveGuildId = (): string | null =>
+    resolveEffectiveGuildId(getPairing()?.guild_id, legacyGuildId());
 
   const effectiveAllowedUsers = (): string[] => {
     const pairing = getPairing();
@@ -440,7 +443,7 @@ export default async function plugin(bb: BbPluginApi) {
     text: string,
   ): Promise<boolean> => {
     const map = getMapByBbThread(bbThreadId);
-    return map
+    return map && isActiveMappedGuild(map.guild_id, effectiveGuildId())
       ? sendToDiscord(map.guild_id, map.discord_channel_id, text)
       : false;
   };
@@ -747,7 +750,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.events.on("thread.idle", async ({ thread, lastAssistantText }) => {
     const map = getMapByBbThread(thread.id);
-    if (!map) return;
+    if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) return;
     touchMap(thread.id);
 
     if (lastAssistantText?.trim()) {
@@ -794,7 +797,8 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.events.on("thread.failed", async ({ thread, error }) => {
-    if (!getMapByBbThread(thread.id)) return;
+    const map = getMapByBbThread(thread.id);
+    if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) return;
     const reason = error?.trim() || "The BB thread failed.";
     await postToThreadChannel(thread.id, `❌ **BB thread failed:** ${reason}`);
     await postToHome(`❌ Thread \`${thread.id}\` failed: ${reason}`);
@@ -803,11 +807,13 @@ export default async function plugin(bb: BbPluginApi) {
   bb.events.on("thread.deleted", async ({ thread }) => {
     const map = getMapByBbThread(thread.id);
     if (!map) return;
-    await sendToDiscord(
-      map.guild_id,
-      map.discord_channel_id,
-      "🗑️ The linked BB thread was deleted. Mention the bot to start a new conversation here.",
-    );
+    if (isActiveMappedGuild(map.guild_id, effectiveGuildId())) {
+      await sendToDiscord(
+        map.guild_id,
+        map.discord_channel_id,
+        "🗑️ The linked BB thread was deleted. Mention the bot to start a new conversation here.",
+      );
+    }
     const removeMap = db.transaction(() => {
       db.prepare("DELETE FROM discord_threads WHERE bb_thread_id = ?").run(thread.id);
       db.prepare("DELETE FROM discord_posted_replies WHERE bb_thread_id = ?").run(
@@ -864,21 +870,27 @@ export default async function plugin(bb: BbPluginApi) {
 
       if (command === "status") {
         const pairing = getPairing();
+        const legacyGuild = legacyGuildId();
+        const activeGuild = effectiveGuildId();
         const rows = db
           .prepare(
             "SELECT * FROM discord_threads ORDER BY last_activity_at DESC LIMIT 10",
           )
           .all() as ThreadMapRow[];
-        const lines = rows.map(
+        const lines = rows
+          .filter((row) => row.guild_id === activeGuild)
+          .map(
           (row) =>
             `${row.bb_thread_id} ↔ #${row.discord_thread_id} — ${row.title ?? "(untitled)"}`,
-        );
+          );
         return {
           exitCode: 0,
           stdout: [
             `Discord gateway: ${client?.isReady() ? `connected as ${botTag ?? "?"}` : "not connected"}`,
             pairing
               ? `Paired: ${pairing.guild_name ?? pairing.guild_id} · #${pairing.channel_name ?? pairing.channel_id} · ${pairing.user_tag ?? pairing.user_id}`
+              : legacyGuild
+                ? `Paired: legacy advanced settings authorize guild ${legacyGuild}`
               : cached.botToken
                 ? "Paired: no — run `bb discord pair`"
                 : "Paired: no — add the bot token in Settings → Plugins → Discord",
@@ -907,18 +919,35 @@ export default async function plugin(bb: BbPluginApi) {
             stdout: `Already paired with ${pairing.guild_name ?? pairing.guild_id}. Run \`bb discord unpair\` first to pair somewhere else.`,
           };
         }
+        const legacyGuild = legacyGuildId();
+        if (legacyGuild) {
+          return {
+            exitCode: 1,
+            stderr: `Discord is already authorized for guild ${legacyGuild} through the legacy advanced settings. Clear "Advanced: server (guild) ID" and "Advanced: additional Discord user IDs" in Settings → Plugins → Discord before using code pairing.`,
+          };
+        }
         return { exitCode: 0, stdout: pairingInstructions() };
       }
 
       if (command === "unpair") {
         const pairing = getPairing();
-        if (!pairing) return { exitCode: 0, stdout: "Not paired." };
+        const legacyGuild = legacyGuildId();
+        if (!pairing && !legacyGuild) {
+          clearPairing();
+          return { exitCode: 0, stdout: "Not paired. Cleared any stale thread mappings." };
+        }
         clearPairing();
         pendingCode = null;
         lastStatusMessage = null;
+        if (legacyGuild) {
+          return {
+            exitCode: 1,
+            stderr: `${pairing ? `Removed the stored pairing for ${pairing.guild_name ?? pairing.guild_id} and cleared its thread mappings. ` : "Cleared stored users and thread mappings. "}Guild ${legacyGuild} is still authorized by legacy settings, which plugins cannot edit. Clear "Advanced: server (guild) ID" and "Advanced: additional Discord user IDs" in Settings → Plugins → Discord to finish unpairing.`,
+          };
+        }
         return {
           exitCode: 0,
-          stdout: `Unpaired from ${pairing.guild_name ?? pairing.guild_id}. Run \`bb discord pair\` to link a server again.`,
+          stdout: `Unpaired from ${pairing!.guild_name ?? pairing!.guild_id}. Run \`bb discord pair\` to link a server again.`,
         };
       }
 
