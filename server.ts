@@ -1,29 +1,19 @@
-// bb-plugin-discord — drive BB agent threads from a Discord server.
-//
-// One Discord thread ↔ one BB thread. You @bb in a Discord thread, the plugin
-// spawns a BB thread and replies with its title. You keep typing in the same
-// Discord thread; each message is forwarded as a follow-up to the BB thread.
-// When the BB agent goes idle, its reply is posted back into the Discord
-// thread. If the agent is asking a question or wants approval, the bot posts
-// the prompt and bridges your reply to the interaction. Lifecycle pings
-// (idle/failed/deleted) also go to a configured home channel for visibility.
+// bb-plugin-discord — drive BB agent threads from an allowlisted Discord account.
 
-import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
-import { z } from "zod";
+import type { BbPluginApi } from "@bb/plugin-sdk";
+import {
+  describePendingInteraction,
+  isAllowedSpawnLocation,
+  parseDiscordIds,
+  resolveInteractionReply,
+  type PendingInteractionLike,
+} from "./bridge.js";
 import { DiscordClient, type DiscordInboundMessage } from "./discord.js";
 
-// ---------------------------------------------------------------------------
-// Limits and tuning
-// ---------------------------------------------------------------------------
-
 const MAX_PROMPT_CHARS = 8000;
-const MAX_REPLY_CHARS = 1800; // per Discord chunk, headroom under 2000
+const MAX_REPLY_CHARS = 1800;
 const MAX_INTERACTION_PROMPT_CHARS = 1800;
-const HOME_CHANNEL_SUMMARY_EVERY_MS = 60_000;
-
-// ---------------------------------------------------------------------------
-// Migrations (append-only — never reorder or edit shipped statements)
-// ---------------------------------------------------------------------------
+const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 const migrations = [
   `CREATE TABLE IF NOT EXISTS discord_threads (
@@ -56,10 +46,6 @@ const migrations = [
   )`,
 ];
 
-// ---------------------------------------------------------------------------
-// Row types
-// ---------------------------------------------------------------------------
-
 interface ThreadMapRow {
   discord_channel_id: string;
   discord_thread_id: string;
@@ -71,63 +57,69 @@ interface ThreadMapRow {
   last_activity_at: number;
 }
 
-// ---------------------------------------------------------------------------
-// Plugin entry
-// ---------------------------------------------------------------------------
-
 export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, migrations);
 
-  // Secret settings: the bot token is stored in a 0600 secrets file, never in
-  // the database or sent to the frontend. The guild allowlist and home channel
-  // are plain settings.
   const settings = bb.settings.define({
     botToken: {
       type: "string",
       secret: true,
       label: "Discord bot token",
       description:
-        "The bot token from the Discord Developer Portal. Stored encrypted on disk; never shown again after you save it.",
+        "Stored in a permission-restricted secret file and never sent to the frontend.",
     },
     guildId: {
       type: "string",
       label: "Allowed Discord server (guild) ID",
+      description: "Only messages from this server are processed.",
+    },
+    allowedUserIds: {
+      type: "string",
+      label: "Allowed Discord user IDs",
       description:
-        "Only messages from this server are processed. Leave blank to disable the bot.",
+        "Required. Comma- or space-separated user IDs allowed to control BB.",
     },
     homeChannelId: {
       type: "string",
       label: "Home channel ID",
-      description:
-        "A Discord channel where the bot posts lifecycle pings and reminders for visibility across all threads.",
+      description: "Optional channel for bridge status and lifecycle alerts.",
     },
     spawnChannelId: {
       type: "string",
-      label: "Spawn channel ID (optional)",
+      label: "Spawn channel ID",
       description:
-        "When set, new threads may only be started from this channel (e.g. a forum channel). Leave blank to allow any channel.",
+        "Optional. New BB conversations must start in this channel or one of its threads.",
     },
     defaultProjectId: {
       type: "project",
       label: "Default BB project",
-      description:
-        "The BB project new threads are spawned into when none is specified.",
+      description: "Project used for new Discord-started BB threads.",
     },
   });
 
+  const initial = await settings.get();
+  if (
+    !initial.botToken ||
+    !initial.guildId ||
+    parseDiscordIds(initial.allowedUserIds).length === 0
+  ) {
+    bb.status.needsConfiguration(
+      "Set the Discord bot token, guild ID, and at least one allowed Discord user ID.",
+    );
+  }
+
   let client: DiscordClient | null = null;
-
   const getBotUserId = (): string | undefined => client?.getUserId();
-
-  // --- DB helpers --------------------------------------------------------
 
   const getMapByBbThread = (bbThreadId: string): ThreadMapRow | undefined =>
     db
       .prepare("SELECT * FROM discord_threads WHERE bb_thread_id = ?")
       .get(bbThreadId) as ThreadMapRow | undefined;
 
-  const getMapByDiscordChannel = (discordChannelId: string): ThreadMapRow | undefined =>
+  const getMapByDiscordChannel = (
+    discordChannelId: string,
+  ): ThreadMapRow | undefined =>
     db
       .prepare("SELECT * FROM discord_threads WHERE discord_channel_id = ?")
       .get(discordChannelId) as ThreadMapRow | undefined;
@@ -142,7 +134,7 @@ export default async function plugin(bb: BbPluginApi) {
       row.discord_thread_id,
       row.guild_id,
       row.bb_thread_id,
-      row.bb_project_id ?? null,
+      row.bb_project_id,
       row.title,
       row.created_at,
       row.last_activity_at,
@@ -150,8 +142,9 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   const touchMap = (bbThreadId: string): void => {
-    db.prepare("UPDATE discord_threads SET last_activity_at = ? WHERE bb_thread_id = ?")
-      .run(Date.now(), bbThreadId);
+    db.prepare(
+      "UPDATE discord_threads SET last_activity_at = ? WHERE bb_thread_id = ?",
+    ).run(Date.now(), bbThreadId);
   };
 
   const markMessageSeen = (messageId: string, channelId: string): boolean => {
@@ -163,110 +156,124 @@ export default async function plugin(bb: BbPluginApi) {
     return result.changes > 0;
   };
 
+  const retryMessage = (messageId: string): void => {
+    db.prepare("DELETE FROM discord_seen_messages WHERE discord_message_id = ?").run(
+      messageId,
+    );
+  };
+
   const isReplyPosted = (bbThreadId: string, replyHash: string): boolean =>
     db
-      .prepare("SELECT 1 FROM discord_posted_replies WHERE bb_thread_id = ? AND reply_hash = ?")
+      .prepare(
+        "SELECT 1 FROM discord_posted_replies WHERE bb_thread_id = ? AND reply_hash = ?",
+      )
       .get(bbThreadId, replyHash) !== undefined;
 
   const markReplyPosted = (bbThreadId: string, replyHash: string): void => {
-    db.prepare(
-      "INSERT OR IGNORE INTO discord_posted_replies (bb_thread_id, reply_hash, posted_at) VALUES (?, ?, ?)",
-    ).run(bbThreadId, replyHash, Date.now());
+    const replaceLast = db.transaction(() => {
+      db.prepare("DELETE FROM discord_posted_replies WHERE bb_thread_id = ?").run(
+        bbThreadId,
+      );
+      db.prepare(
+        "INSERT INTO discord_posted_replies (bb_thread_id, reply_hash, posted_at) VALUES (?, ?, ?)",
+      ).run(bbThreadId, replyHash, Date.now());
+    });
+    replaceLast();
   };
 
-  const isInteractionPosted = (bbThreadId: string, interactionId: string): boolean =>
+  const isInteractionPosted = (
+    bbThreadId: string,
+    interactionId: string,
+  ): boolean =>
     db
       .prepare(
         "SELECT 1 FROM discord_posted_interactions WHERE bb_thread_id = ? AND interaction_id = ?",
       )
       .get(bbThreadId, interactionId) !== undefined;
 
-  const markInteractionPosted = (bbThreadId: string, interactionId: string): void => {
+  const markInteractionPosted = (
+    bbThreadId: string,
+    interactionId: string,
+  ): void => {
     db.prepare(
       "INSERT OR IGNORE INTO discord_posted_interactions (bb_thread_id, interaction_id, posted_at) VALUES (?, ?, ?)",
     ).run(bbThreadId, interactionId, Date.now());
   };
 
-  // --- Discord plumbing --------------------------------------------------
-
-  const sendToDiscord = async (channelId: string, text: string): Promise<void> => {
-    if (!client) return;
+  const sendToDiscord = async (
+    channelId: string,
+    text: string,
+  ): Promise<boolean> => {
+    if (!client) return false;
     try {
       await client.sendMessage(channelId, text);
+      return true;
     } catch (error) {
       bb.log.warn(`Discord send failed (${channelId}): ${errorMessage(error)}`);
+      return false;
     }
   };
 
-  const postToThreadChannel = async (bbThreadId: string, text: string): Promise<void> => {
+  const postToThreadChannel = async (
+    bbThreadId: string,
+    text: string,
+  ): Promise<boolean> => {
     const map = getMapByBbThread(bbThreadId);
-    if (!map) return;
-    await sendToDiscord(map.discord_channel_id, text);
+    return map ? sendToDiscord(map.discord_channel_id, text) : false;
   };
 
-  const postToHome = async (text: string): Promise<void> => {
+  const postToHome = async (text: string): Promise<boolean> => {
     const values = await settings.get();
-    const homeId = values.homeChannelId;
-    if (!homeId) return;
-    await sendToDiscord(homeId, text);
+    return values.homeChannelId
+      ? sendToDiscord(values.homeChannelId, text)
+      : false;
   };
 
-  // --- Thread spawning ---------------------------------------------------
-
-  const resolveProjectId = async (values: {
-    defaultProjectId?: string;
-  }): Promise<string> => {
-    if (values.defaultProjectId) return values.defaultProjectId;
-    try {
-      const projects = await bb.sdk.projects.list({ includePersonal: true });
-      const personal = projects.find((p) => p.kind === "personal");
-      if (personal) return personal.id;
-      if (projects.length > 0) return projects[0]!.id;
-    } catch (error) {
-      bb.log.warn(`Could not list projects: ${errorMessage(error)}`);
+  const resolveProjectId = async (configured?: string): Promise<string> => {
+    if (configured) return configured;
+    const projects = await bb.sdk.projects.list({ includePersonal: true });
+    const personal = projects.find((project) => project.kind === "personal");
+    const projectId = personal?.id ?? projects[0]?.id;
+    if (!projectId) {
+      throw new Error(
+        "No BB project is available. Configure a default project in the Discord plugin settings.",
+      );
     }
-    throw new Error(
-      "No default BB project configured. Set one in the Discord plugin settings.",
-    );
+    return projectId;
   };
 
   const spawnThread = async (
     prompt: string,
-    discordChannelId: string,
-    discordThreadId: string,
-    guildId: string,
+    message: DiscordInboundMessage,
   ): Promise<string> => {
     const values = await settings.get();
-    const projectId = await resolveProjectId(values);
-    const providers = await bb.sdk.providers.list();
-    const provider = providers.find((p) => p.available);
-    if (!provider) throw new Error("No available BB provider was found");
-    const models = await bb.sdk.providers.models({ providerId: provider.id });
-    const model = models.models[0];
-    if (!model) throw new Error(`Provider ${provider.id} has no models`);
+    const projectId = await resolveProjectId(values.defaultProjectId);
+    const defaults = await bb.sdk.projects.defaultExecutionOptions({ projectId });
+    if (!defaults) {
+      throw new Error(
+        "The selected BB project has no execution defaults. Open BB once and choose a provider/model for that project.",
+      );
+    }
 
-    // ThreadSpawnArgs accepts either an `input` array or a plain `prompt`
-    // string. The string form avoids the PromptInput discriminated-union
-    // typing and is all a forwarded chat message needs.
-    type SpawnArgs = Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0];
-    const spawnArgs = {
+    const attributedPrompt = `Discord request from ${message.authorTag} (${message.authorId}):\n\n${prompt}`;
+    const thread = await bb.sdk.threads.spawn({
       projectId,
-      providerId: provider.id,
-      model: model.model,
-      reasoningLevel: "low" as const,
-      permissionMode: "auto" as const,
-      environment: { type: "project-default" as const },
-      prompt,
+      providerId: defaults.providerId,
+      model: defaults.model,
+      reasoningLevel: defaults.reasoningLevel,
+      permissionMode: defaults.permissionMode,
+      serviceTier: defaults.serviceTier,
+      environment: { type: "project-default" },
+      prompt: attributedPrompt,
       title: truncate(`Discord: ${prompt}`, 100),
-      visibility: "hidden" as const,
-    } as SpawnArgs;
+      visibility: "hidden",
+    });
 
-    const thread = await bb.sdk.threads.spawn(spawnArgs);
     const now = Date.now();
     insertMap({
-      discord_channel_id: discordChannelId,
-      discord_thread_id: discordThreadId,
-      guild_id: guildId,
+      discord_channel_id: message.channelId,
+      discord_thread_id: message.channelId,
+      guild_id: message.guildId,
       bb_thread_id: thread.id,
       bb_project_id: projectId,
       title: thread.title ?? null,
@@ -276,55 +283,116 @@ export default async function plugin(bb: BbPluginApi) {
     return thread.id;
   };
 
-  // --- Inbound message handling -----------------------------------------
-
-  const handleInbound = async (message: DiscordInboundMessage): Promise<void> => {
-    if (!message.mentioned) return;
-    if (!message.content.trim()) return;
-    if (message.content.length > MAX_PROMPT_CHARS) {
-      await sendToDiscord(message.channelId, "⚠️ Prompt is too long (max 8000 chars).");
-      return;
+  const handleInteractionReply = async (
+    map: ThreadMapRow,
+    message: DiscordInboundMessage,
+  ): Promise<boolean> => {
+    const interactions = await bb.sdk.threads.interactions.list({
+      threadId: map.bb_thread_id,
+    });
+    const pending = interactions.filter(
+      (interaction) => interaction.status === "pending",
+    );
+    if (pending.length === 0) return false;
+    if (pending.length > 1) {
+      await sendToDiscord(
+        message.channelId,
+        "⚠️ BB has multiple pending interactions. Open the BB thread to answer them unambiguously.",
+      );
+      return true;
     }
-    // Idempotency: ignore replays of a message we already saw (reconnect
-    // redelivery). The UNIQUE constraint on discord_message_id makes this safe.
-    if (!markMessageSeen(message.messageId, message.channelId)) return;
 
+    const interaction = pending[0]!;
+    const action = resolveInteractionReply(
+      interaction as PendingInteractionLike,
+      message.content,
+    );
+    if (action.kind === "error") {
+      await sendToDiscord(message.channelId, `⚠️ ${action.message}`);
+      return true;
+    }
+
+    if (action.kind === "respond") {
+      await bb.sdk.threads.interactions.respond({
+        threadId: map.bb_thread_id,
+        interactionId: interaction.id,
+        value: action.value,
+      });
+    } else {
+      await bb.sdk.threads.interactions.resolve({
+        threadId: map.bb_thread_id,
+        interactionId: interaction.id,
+        resolution: action.resolution,
+      });
+    }
+    touchMap(map.bb_thread_id);
+    await client?.react(message.channelId, message.messageId, "✅");
+    return true;
+  };
+
+  const handleInbound = async (
+    message: DiscordInboundMessage,
+  ): Promise<void> => {
+    if (!message.content.trim()) return;
     const existing = getMapByDiscordChannel(message.channelId);
 
+    // Existing mapped channels accept ordinary replies. New conversations
+    // require an explicit bot mention.
+    if (!existing && !message.mentioned) return;
+    if (message.content.length > MAX_PROMPT_CHARS) {
+      await sendToDiscord(
+        message.channelId,
+        `⚠️ Prompt is too long (max ${MAX_PROMPT_CHARS} characters).`,
+      );
+      return;
+    }
+    if (!markMessageSeen(message.messageId, message.channelId)) return;
+
     if (existing) {
-      // Continuing an existing conversation: forward as a follow-up.
-      await client?.react(message.channelId, message.messageId, "👍");
       try {
-        type SendArgs = Parameters<BbPluginApi["sdk"]["threads"]["send"]>[0];
+        if (await handleInteractionReply(existing, message)) return;
+        await client?.react(message.channelId, message.messageId, "👍");
         await bb.sdk.threads.send({
           threadId: existing.bb_thread_id,
-          input: [{ type: "text", text: message.content, mentions: [] }],
-        } as SendArgs);
+          mode: "auto",
+          input: [
+            {
+              type: "text",
+              text: `Discord follow-up from ${message.authorTag} (${message.authorId}):\n\n${message.content}`,
+              mentions: [],
+            },
+          ],
+        });
         touchMap(existing.bb_thread_id);
       } catch (error) {
+        retryMessage(message.messageId);
         await sendToDiscord(
           message.channelId,
-          `⚠️ Could not send your message to the BB thread: ${errorMessage(error)}`,
+          `⚠️ Could not send your message to BB: ${errorMessage(error)}`,
         );
       }
       return;
     }
 
-    // New conversation: spawn a thread.
+    const values = await settings.get();
+    if (!isAllowedSpawnLocation(message, values.spawnChannelId)) {
+      await sendToDiscord(
+        message.channelId,
+        "⚠️ New BB conversations are not allowed in this channel.",
+      );
+      return;
+    }
+
     await client?.react(message.channelId, message.messageId, "🚀");
     try {
-      const bbThreadId = await spawnThread(
-        message.content,
-        message.channelId,
-        message.channelId,
-        message.guildId,
-      );
+      const bbThreadId = await spawnThread(message.content, message);
       const thread = await bb.sdk.threads.get({ threadId: bbThreadId });
       await sendToDiscord(
         message.channelId,
-        `✅ Started BB thread \`${bbThreadId}\`${thread.title ? ` — ${thread.title}` : ""}. I'll post the agent's replies here.`,
+        `✅ Started BB thread \`${bbThreadId}\`${thread.title ? ` — ${thread.title}` : ""}. Future replies in this Discord channel will be forwarded without another mention.`,
       );
     } catch (error) {
+      retryMessage(message.messageId);
       await sendToDiscord(
         message.channelId,
         `⚠️ Could not start a BB thread: ${errorMessage(error)}`,
@@ -332,37 +400,46 @@ export default async function plugin(bb: BbPluginApi) {
     }
   };
 
-  // --- Lifecycle event bridging -----------------------------------------
-
   bb.events.on("thread.idle", async ({ thread, lastAssistantText }) => {
     const map = getMapByBbThread(thread.id);
     if (!map) return;
     touchMap(thread.id);
 
-    // Post the agent's reply text, if any, deduplicated by content hash so a
-    // repeated idle with the same text doesn't flood the channel.
-    if (lastAssistantText && lastAssistantText.trim()) {
+    if (lastAssistantText?.trim()) {
       const trimmed = lastAssistantText.trim();
       const replyHash = hashString(trimmed);
       if (!isReplyPosted(thread.id, replyHash)) {
-        await postToThreadChannel(thread.id, truncate(trimmed, MAX_REPLY_CHARS));
-        markReplyPosted(thread.id, replyHash);
+        const posted = await postToThreadChannel(
+          thread.id,
+          truncate(trimmed, MAX_REPLY_CHARS),
+        );
+        if (posted) markReplyPosted(thread.id, replyHash);
       }
     }
 
-    // Check for pending interactions the agent is waiting on.
     try {
-      const interactions = await bb.sdk.threads.interactions.list({ threadId: thread.id });
-      for (const interaction of interactions ?? []) {
-        if (isInteractionPosted(thread.id, interaction.id)) continue;
-        const summary = describeInteraction(interaction);
-        if (summary) {
-          await postToThreadChannel(
-            thread.id,
-            `❓ **BB needs you:** ${truncate(summary, MAX_INTERACTION_PROMPT_CHARS)}\n_Reply here to answer, or type \`/bb approve\` or \`/bb deny\`._`,
-          );
-          markInteractionPosted(thread.id, interaction.id);
+      const interactions = await bb.sdk.threads.interactions.list({
+        threadId: thread.id,
+      });
+      for (const interaction of interactions) {
+        if (
+          interaction.status !== "pending" ||
+          isInteractionPosted(thread.id, interaction.id)
+        ) {
+          continue;
         }
+        const summary = describePendingInteraction(
+          interaction as PendingInteractionLike,
+        );
+        const instructions =
+          interaction.payload.kind === "approval"
+            ? "Reply `approve`, `approve session`, or `deny`."
+            : "Reply here to answer.";
+        const posted = await postToThreadChannel(
+          thread.id,
+          `❓ **BB needs you:** ${truncate(summary, MAX_INTERACTION_PROMPT_CHARS)}\n_${instructions}_`,
+        );
+        if (posted) markInteractionPosted(thread.id, interaction.id);
       }
     } catch (error) {
       bb.log.warn(
@@ -372,8 +449,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.events.on("thread.failed", async ({ thread, error }) => {
-    const map = getMapByBbThread(thread.id);
-    if (!map) return;
+    if (!getMapByBbThread(thread.id)) return;
     const reason = error?.trim() || "The BB thread failed.";
     await postToThreadChannel(thread.id, `❌ **BB thread failed:** ${reason}`);
     await postToHome(`❌ Thread \`${thread.id}\` failed: ${reason}`);
@@ -382,85 +458,98 @@ export default async function plugin(bb: BbPluginApi) {
   bb.events.on("thread.deleted", async ({ thread }) => {
     const map = getMapByBbThread(thread.id);
     if (!map) return;
-    db.prepare(
-      "UPDATE discord_threads SET bb_project_id = NULL, title = COALESCE(title, 'deleted') WHERE bb_thread_id = ?",
-    ).run(thread.id);
-    await postToThreadChannel(
-      thread.id,
-      "🗑️ The linked BB thread was deleted. This Discord thread is no longer connected.",
+    await sendToDiscord(
+      map.discord_channel_id,
+      "🗑️ The linked BB thread was deleted. Mention the bot to start a new conversation here.",
     );
+    const removeMap = db.transaction(() => {
+      db.prepare("DELETE FROM discord_threads WHERE bb_thread_id = ?").run(thread.id);
+      db.prepare("DELETE FROM discord_posted_replies WHERE bb_thread_id = ?").run(
+        thread.id,
+      );
+      db.prepare(
+        "DELETE FROM discord_posted_interactions WHERE bb_thread_id = ?",
+      ).run(thread.id);
+    });
+    removeMap();
   });
-
-  // --- CLI for approve/deny/status --------------------------------------
 
   bb.cli.register({
     name: "discord",
     summary: "Manage the Discord BB bridge",
     commands: [
-      { name: "status", summary: "Show Discord bridge status", usage: "bb discord status" },
+      {
+        name: "status",
+        summary: "Show bridge connection and recent mapped threads",
+        usage: "bb discord status",
+      },
     ],
-    async run() {
+    async run(argv) {
+      if (argv.length > 0 && argv[0] !== "status") {
+        return {
+          exitCode: 2,
+          stderr: "Usage: bb discord status",
+        };
+      }
       const rows = db
-        .prepare("SELECT * FROM discord_threads ORDER BY last_activity_at DESC LIMIT 10")
+        .prepare(
+          "SELECT * FROM discord_threads ORDER BY last_activity_at DESC LIMIT 10",
+        )
         .all() as ThreadMapRow[];
       const lines = rows.map(
-        (r) =>
-          `${r.bb_thread_id} ↔ #${r.discord_thread_id} — ${r.title ?? "(untitled)"}`,
+        (row) =>
+          `${row.bb_thread_id} ↔ #${row.discord_thread_id} — ${row.title ?? "(untitled)"}`,
       );
       return {
         exitCode: 0,
-        stdout:
+        stdout: [
+          `Discord gateway: ${client?.isReady() ? "connected" : "not connected"}`,
           lines.length > 0
-            ? `Discord bridge (${rows.length} recent):\n${lines.join("\n")}`
+            ? `Recent mappings:\n${lines.join("\n")}`
             : "No Discord-bridged threads yet.",
+        ].join("\n"),
       };
     },
   });
 
-  // --- Background service: the Gateway bot -------------------------------
-  //
-  // Runs the discord.js client for the lifetime of the plugin. A crash
-  // restarts it with capped backoff (owned by the host). We log in once the
-  // factory completes and resolve when the signal aborts on dispose/reload.
-
   bb.background.service("discord-gateway", {
     async start(signal) {
       const values = await settings.get();
-      const token = values.botToken;
-      const guildId = values.guildId;
-      if (!token || !guildId) {
-        bb.status.needsConfiguration(
-          "Set a Discord bot token and guild ID in the Discord plugin settings.",
+      const allowedAuthorIds = parseDiscordIds(values.allowedUserIds);
+      if (!values.botToken || !values.guildId || allowedAuthorIds.length === 0) {
+        throw needsConfigurationError(
+          "Set the Discord bot token, guild ID, and at least one allowed Discord user ID.",
         );
-        bb.log.warn("Discord bot disabled: missing token or guild ID");
-        return;
       }
 
       client = new DiscordClient({
-        token,
-        allowedGuildIds: [guildId],
+        token: values.botToken,
+        allowedGuildIds: [values.guildId],
+        allowedAuthorIds,
         botUserId: getBotUserId,
-        onMessage: (message) => handleInbound(message),
+        onMessage: handleInbound,
         onReady: async () => {
           await postToHome("🟢 Discord BB bridge is online.");
         },
         log: {
-          info: (m) => bb.log.info(m),
-          warn: (m) => bb.log.warn(m),
-          error: (m) => bb.log.error(m),
+          info: (message) => bb.log.info(message),
+          warn: (message) => bb.log.warn(message),
+          error: (message) => bb.log.error(message),
         },
       });
 
       try {
         await client.login();
       } catch (error) {
-        bb.log.error(`Discord login failed: ${errorMessage(error)}`);
-        bb.status.needsConfiguration("Discord login failed. Check the bot token.");
-        return;
+        await client.destroy();
+        client = null;
+        throw needsConfigurationError(
+          `Discord login failed. Check the bot token: ${errorMessage(error)}`,
+        );
       }
 
-      // Keep the service alive until disposed.
       await new Promise<void>((resolve) => {
+        if (signal.aborted) return resolve();
         signal.addEventListener("abort", () => resolve(), { once: true });
       });
 
@@ -469,51 +558,42 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  bb.background.schedule("cleanup", "0 4 * * *", async () => {
+    const cutoff = Date.now() - RETENTION_MS;
+    db.prepare("DELETE FROM discord_seen_messages WHERE seen_at < ?").run(cutoff);
+    db.prepare("DELETE FROM discord_posted_replies WHERE posted_at < ?").run(cutoff);
+    db.prepare("DELETE FROM discord_posted_interactions WHERE posted_at < ?").run(
+      cutoff,
+    );
+  });
+
   bb.onDispose(async () => {
-    if (client) await client.destroy();
+    if (client) {
+      await client.destroy();
+      client = null;
+    }
   });
 
   bb.log.info("Discord plugin loaded");
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+function needsConfigurationError(message: string): Error {
+  return Object.assign(new Error(message), { name: "NeedsConfigurationError" });
+}
 
 function hashString(input: string): string {
   let hash = 0;
-  for (let i = 0; i < input.length; i++) {
-    hash = (hash << 5) - hash + input.charCodeAt(i);
+  for (let index = 0; index < input.length; index += 1) {
+    hash = (hash << 5) - hash + input.charCodeAt(index);
     hash |= 0;
   }
   return String(hash);
 }
 
 function truncate(text: string, max: number): string {
-  return text.length > max ? text.slice(0, max - 1) + "…" : text;
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/** Produce a short human prompt from an interaction's kind/payload. */
-function describeInteraction(interaction: {
-  id: string;
-  kind?: string;
-  type?: string;
-  message?: string | null;
-  prompt?: string | null;
-  description?: string | null;
-  title?: string | null;
-}): string | null {
-  const text =
-    interaction.message ??
-    interaction.prompt ??
-    interaction.description ??
-    interaction.title ??
-    null;
-  const label = interaction.kind ?? interaction.type ?? "interaction";
-  if (text) return `${label}: ${text}`;
-  return `BB is waiting on a ${label}. Open the thread to respond.`;
 }

@@ -1,84 +1,104 @@
 # bb-plugin-discord
 
-Drive BB agent threads from a Discord server. One Discord thread ↔ one BB thread: you @bb to start a conversation, keep typing to chat, and the agent's replies come back into the same thread.
+Control BB agent threads from Discord. Mention the bot to create a linked BB thread, continue chatting in the same Discord channel without repeated mentions, answer supported BB interactions, and receive per-turn lifecycle updates.
 
-## What it does
+## Security boundary
 
-- **Start a thread:** @bb with a prompt in a Discord thread/channel. The plugin spawns a BB thread and confirms with its ID and title.
-- **Chat:** Reply in the same Discord thread. Each message is forwarded to the BB thread as a follow-up.
-- **Replies:** When the BB agent goes idle, its reply is posted back into the Discord thread.
-- **Questions & approvals:** If the agent needs input (a question, a command approval, a file-change approval), the bot posts the prompt in the thread. Reply to answer.
-- **Lifecycle pings:** Failures and deletions are posted both in the originating thread and a home channel for visibility.
+This plugin can start agent work on the machine that runs BB. Treat access like shell access:
 
-## Transport: Gateway bot
+- A required Discord user-ID allowlist limits control to explicitly trusted accounts.
+- A guild allowlist rejects every other Discord server.
+- New conversations require an explicit bot mention.
+- An optional spawn channel limits where new conversations may begin; its child threads are accepted.
+- The bot token is a secret setting stored in BB's permission-restricted plugin secrets directory and is never exposed to the frontend.
+- Prompts are capped at 8,000 characters and Discord message IDs are deduplicated.
 
-The plugin runs a Discord **Gateway** bot (via `discord.js`) as a `bb.background.service`. This is required for the chat loop — only the Gateway delivers message events, which slash-command webhooks cannot. The bot reconnects automatically on disconnect.
+The spawned thread uses the selected BB project's provider, model, reasoning, service-tier, and permission defaults. Review those defaults before enabling Discord control.
 
 ## Setup
 
-### 1. Create a Discord bot
+### 1. Create and invite the bot
 
-1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) → New Application.
-2. **Bot** tab → Reset Token → copy the token.
-3. Enable **Message Content Intent** and **Server Members Intent** under Privileged Gateway Intents.
-4. **OAuth2 → URL Generator**: scopes `bot`, permissions `Send Messages`, `Read Message History`, `Create Public Threads`, `Add Reactions`.
-5. Invite the bot to your server with the generated URL.
+1. In the [Discord Developer Portal](https://discord.com/developers/applications), create an application and bot.
+2. On the Bot page, copy/reset the token and enable **Message Content Intent**. Server Members Intent is not required.
+3. In OAuth2 → URL Generator, select the `bot` scope and grant:
+   - View Channels
+   - Send Messages
+   - Send Messages in Threads
+   - Read Message History
+   - Add Reactions
+4. Invite the bot to the intended Discord server.
 
-### 2. Configure the plugin
+### 2. Configure BB
 
-In BB → Settings → Discord plugin:
+Open BB → Settings → Plugins → Discord and set:
 
-| Setting | Purpose |
-|---|---|
-| **Discord bot token** | Secret — stored encrypted on disk, never shown again. |
-| **Allowed server (guild) ID** | Only messages from this server are processed. |
-| **Home channel ID** | Where lifecycle pings and reminders post. |
-| **Spawn channel ID** *(optional)* | Restrict thread-starting to one channel. |
-| **Default BB project** | Which BB project new threads spawn into. |
+| Setting | Required | Purpose |
+|---|---:|---|
+| Discord bot token | Yes | Gateway authentication; stored as a secret. |
+| Allowed server (guild) ID | Yes | The only Discord server accepted. |
+| Allowed Discord user IDs | Yes | Comma- or space-separated users allowed to control BB. |
+| Home channel ID | No | Online notices and failure alerts. |
+| Spawn channel ID | No | Restricts new conversations to this channel and its threads. |
+| Default BB project | No | Project used for new threads; otherwise the personal/first available project is used. |
 
-Get IDs with Discord's Developer Mode (right-click → Copy ID).
+Enable Discord Developer Mode and use **Copy ID** to obtain guild, channel, and user IDs. Then reload:
 
-### 3. Reload
-
-```
+```sh
 bb plugin reload discord
+bb discord status
 ```
 
-## Security model
+## Usage
 
-- The bot token is a **secret setting** — stored in a `0600` file under `<dataDir>/plugins/discord/secrets/`, never in the database or sent to the frontend.
-- **Guild allowlist:** the bot ignores every message from any server not in the allowlist.
-- **Mention-gated:** the bot only acts on explicit @bb mentions. It does not read or log other messages.
-- **Idempotency:** Discord message IDs are deduplicated in SQLite, so reconnect redelivery never double-processes a message.
-- **Prompt-size limit:** prompts over 8000 chars are rejected before reaching BB.
-- **Outbound retry:** Discord sends are wrapped with bounded retry/backoff.
+Start a conversation by mentioning the bot:
 
-## How it works
-
-```
-Discord @bb "fix the login bug"
-  → bb.sdk.threads.spawn(...)         # new BB thread
-  → store discord_channel ↔ bb_thread
-  → confirm in Discord
-
-Discord reply "also check the CSS"
-  → bb.sdk.threads.send(...)          # follow-up to same thread
-
-BB agent finishes turn (thread.idle)
-  → lastAssistantText posted to Discord thread
-  → interactions.list() checked for pending questions
-  → if pending, bot posts "BB needs you: …"
+```text
+@bb inspect the failing login tests
 ```
 
-## CLI
+Once linked, every message from an allowlisted user in that Discord channel is forwarded as a follow-up without another mention. BB's final response for each turn is sent back to the channel.
 
+When BB asks one question, reply normally. For several questions, reply with numbered lines:
+
+```text
+1: feature/discord
+2: run the full suite
 ```
-bb discord status   # list recent bridged threads
+
+For approvals, reply with one of:
+
+```text
+approve
+approve session
+deny
 ```
 
-## Out of scope (v1)
+Only decisions offered by BB are accepted. If several interactions are pending simultaneously, the bot asks you to resolve them in BB to avoid ambiguity.
 
-- Multi-server / per-user auth
-- Reminders and scheduled automations
-- Streaming token-level progress (replies are per-turn, not live)
-- Reply-to-thread appending from BB's side
+## Development and verification
+
+```sh
+npm install
+npm run check
+```
+
+`npm run check` typechecks against the vendored declarations, runs the bridge logic tests, verifies that declarations match the installed BB SDK, and produces the plugin artifacts.
+
+Install or reload the local checkout with:
+
+```sh
+bb plugin install .
+bb plugin reload discord
+bb plugin list
+bb plugin logs discord -n 100
+```
+
+The Gateway connection runs as a supervised `bb.background.service`. Discord.js handles gateway reconnects, and outbound message chunks receive bounded retries. Deduplication state and channel ↔ BB-thread mappings are stored in the plugin SQLite database.
+
+## Current scope
+
+- One Discord channel/thread maps to one BB thread.
+- One configured guild with one or more allowlisted users.
+- Replies are per turn, not token-streamed.
+- Plain text and approval/question interactions are bridged; multiple simultaneous interactions must be resolved in BB.

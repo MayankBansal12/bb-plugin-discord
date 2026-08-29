@@ -13,5 +13,11 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["server.ts", "discord.ts", "types"]
+  "include": [
+    "server.ts",
+    "discord.ts",
+    "bridge.ts",
+    "bridge.test.ts",
+    "types"
+  ]
 }

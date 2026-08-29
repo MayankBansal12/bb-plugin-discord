@@ -1,14 +1,15 @@
 {
   "name": "bb-plugin-discord",
   "version": "0.1.0",
+  "description": "Control allowlisted BB agent threads from Discord and receive lifecycle updates.",
   "type": "module",
   "engines": {
-    "bb": ">=0.36",
-    "bbPluginSdk": "^0.4.1"
+    "bb": ">=0.40.0",
+    "bbPluginSdk": ">=0.4.28"
   },
   "bb": {
     "name": "Discord",
-    "description": "Drive BB agent threads from a Discord server: start, chat, and receive lifecycle updates in one place.",
+    "description": "Drive BB agent threads from Discord: start, chat, answer interactions, and receive lifecycle updates.",
     "branding": {
       "icon": "MessageCircle"
     },
@@ -20,10 +21,13 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "tsx": "^4.20.5",
     "typescript": "^5.7.0"
   },
   "scripts": {
     "build": "bb plugin build",
+    "check": "npm run typecheck && npm test && bb plugin types --check && bb plugin build",
+    "test": "tsx --test bridge.test.ts",
     "typecheck": "tsc --noEmit"
   }
 }
