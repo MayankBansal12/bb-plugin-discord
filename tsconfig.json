@@ -24,6 +24,7 @@
   "include": [
     "server.ts",
     "discord.ts",
+    "discord.test.ts",
     "bridge.ts",
     "pairing.ts",
     "tools.ts",

@@ -124,6 +124,29 @@ export function toFriendlyError(error: unknown): Error {
   });
 }
 
+/**
+ * Discord's client-level channel fetch is global across every guild the bot
+ * has joined. Keep that lookup from becoming an authorization bypass by
+ * binding every fetched channel to the guild selected by the caller.
+ */
+export function requireChannelInGuild(
+  channel: Channel | null,
+  channelId: string,
+  guildId: string,
+): Channel {
+  if (
+    !channel ||
+    channel.isDMBased() ||
+    !("guildId" in channel) ||
+    channel.guildId !== guildId
+  ) {
+    throw new Error(
+      `Channel ${channelId} is not in the paired Discord server.`,
+    );
+  }
+  return channel;
+}
+
 export class DiscordClient {
   private readonly client: Client;
   private readonly opts: DiscordClientOptions;
@@ -189,8 +212,12 @@ export class DiscordClient {
     return this.client.user?.tag;
   }
 
-  async sendMessage(channelId: string, text: string): Promise<void> {
-    const channel = await this.fetchChannel(channelId);
+  async sendMessage(
+    guildId: string,
+    channelId: string,
+    text: string,
+  ): Promise<void> {
+    const channel = await this.fetchGuildChannel(guildId, channelId);
     if (!channel || !("send" in channel)) {
       throw new Error(`Channel ${channelId} is not text-sendable`);
     }
@@ -204,8 +231,13 @@ export class DiscordClient {
     }
   }
 
-  async react(channelId: string, messageId: string, emoji: string): Promise<void> {
-    const channel = await this.fetchChannel(channelId);
+  async react(
+    guildId: string,
+    channelId: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<void> {
+    const channel = await this.fetchGuildChannel(guildId, channelId);
     if (!channel || !("messages" in channel)) return;
     try {
       const message = await (
@@ -274,10 +306,11 @@ export class DiscordClient {
   }
 
   async fetchMessages(
+    guildId: string,
     channelId: string,
     limit: number,
   ): Promise<DiscordMessageSummary[]> {
-    const channel = await this.fetchChannel(channelId);
+    const channel = await this.fetchGuildChannel(guildId, channelId);
     if (!channel || !("messages" in channel)) {
       throw new Error(`Channel ${channelId} has no readable message history.`);
     }
@@ -300,11 +333,12 @@ export class DiscordClient {
   }
 
   async createThread(
+    guildId: string,
     channelId: string,
     name: string,
     seedMessage?: string,
   ): Promise<{ id: string; name: string }> {
-    const channel = await this.fetchChannel(channelId);
+    const channel = await this.fetchGuildChannel(guildId, channelId);
     if (!channel || channel.type !== ChannelType.GuildText) {
       throw new Error(
         `Channel ${channelId} is not a text channel, so it cannot hold threads.`,
@@ -399,6 +433,7 @@ export class DiscordClient {
   }
 
   async editChannel(
+    guildId: string,
     channelId: string,
     options: {
       name?: string;
@@ -407,7 +442,7 @@ export class DiscordClient {
       reason?: string;
     },
   ): Promise<DiscordChannelSummary> {
-    const channel = await this.fetchChannel(channelId);
+    const channel = await this.fetchGuildChannel(guildId, channelId);
     if (!channel || !("edit" in channel) || channel.isDMBased()) {
       throw new Error(`Channel ${channelId} cannot be edited.`);
     }
@@ -433,8 +468,12 @@ export class DiscordClient {
     }
   }
 
-  async deleteChannel(channelId: string, reason: string): Promise<string> {
-    const channel = await this.fetchChannel(channelId);
+  async deleteChannel(
+    guildId: string,
+    channelId: string,
+    reason: string,
+  ): Promise<string> {
+    const channel = await this.fetchGuildChannel(guildId, channelId);
     if (!channel || channel.isDMBased() || !("delete" in channel)) {
       throw new Error(`Channel ${channelId} cannot be deleted.`);
     }
@@ -520,14 +559,24 @@ export class DiscordClient {
     throw toFriendlyError(lastError);
   }
 
-  private async fetchChannel(channelId: string): Promise<Channel | null> {
+  private async fetchGuildChannel(
+    guildId: string,
+    channelId: string,
+  ): Promise<Channel> {
     try {
-      return await this.client.channels.fetch(channelId);
+      const channel = await this.client.channels.fetch(channelId);
+      return requireChannelInGuild(channel, channelId, guildId);
     } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === `Channel ${channelId} is not in the paired Discord server.`
+      ) {
+        throw error;
+      }
       this.opts.log.warn(
         `Could not fetch channel ${channelId}: ${classifyDiscordError(error).message}`,
       );
-      return null;
+      throw toFriendlyError(error);
     }
   }
 

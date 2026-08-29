@@ -159,7 +159,13 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
       const state = ready(deps, false);
       if (!isReady(state)) return state;
       return guarded(async () =>
-        json(await state.client.fetchMessages(channelId, limit ?? 25)),
+        json(
+          await state.client.fetchMessages(
+            state.guildId,
+            channelId,
+            limit ?? 25,
+          ),
+        ),
       );
     },
   });
@@ -179,7 +185,7 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
       const state = ready(deps, false);
       if (!isReady(state)) return state;
       return guarded(async () => {
-        await state.client.sendMessage(channelId, content);
+        await state.client.sendMessage(state.guildId, channelId, content);
         return `Sent to ${channelId}.`;
       });
     },
@@ -201,7 +207,14 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
       const state = ready(deps, false);
       if (!isReady(state)) return state;
       return guarded(async () =>
-        json(await state.client.createThread(channelId, name, message)),
+        json(
+          await state.client.createThread(
+            state.guildId,
+            channelId,
+            name,
+            message,
+          ),
+        ),
       );
     },
   });
@@ -290,7 +303,7 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
       if (!isReady(state)) return state;
       return guarded(async () =>
         json(
-          await state.client.editChannel(channelId, {
+          await state.client.editChannel(state.guildId, channelId, {
             name,
             topic,
             slowmodeSeconds,
@@ -355,6 +368,7 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
       }
       return guarded(async () => {
         const name = await state.client.deleteChannel(
+          state.guildId,
           channelId,
           auditReason(ctx.threadId),
         );

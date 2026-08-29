@@ -419,12 +419,13 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   const sendToDiscord = async (
+    guildId: string,
     channelId: string,
     text: string,
   ): Promise<boolean> => {
     if (!client) return false;
     try {
-      await client.sendMessage(channelId, text);
+      await client.sendMessage(guildId, channelId, text);
       return true;
     } catch (error) {
       bb.log.warn(
@@ -439,7 +440,9 @@ export default async function plugin(bb: BbPluginApi) {
     text: string,
   ): Promise<boolean> => {
     const map = getMapByBbThread(bbThreadId);
-    return map ? sendToDiscord(map.discord_channel_id, text) : false;
+    return map
+      ? sendToDiscord(map.guild_id, map.discord_channel_id, text)
+      : false;
   };
 
   const homeChannelId = (): string | null =>
@@ -447,7 +450,10 @@ export default async function plugin(bb: BbPluginApi) {
 
   const postToHome = async (text: string): Promise<boolean> => {
     const channelId = homeChannelId();
-    return channelId ? sendToDiscord(channelId, text) : false;
+    const guildId = effectiveGuildId();
+    return channelId && guildId
+      ? sendToDiscord(guildId, channelId, text)
+      : false;
   };
 
   /**
@@ -525,6 +531,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (pending.length === 0) return false;
     if (pending.length > 1) {
       await sendToDiscord(
+        message.guildId,
         message.channelId,
         "⚠️ BB has multiple pending interactions. Open the BB thread to answer them unambiguously.",
       );
@@ -537,7 +544,7 @@ export default async function plugin(bb: BbPluginApi) {
       message.content,
     );
     if (action.kind === "error") {
-      await sendToDiscord(message.channelId, `⚠️ ${action.message}`);
+      await sendToDiscord(message.guildId, message.channelId, `⚠️ ${action.message}`);
       return true;
     }
 
@@ -555,7 +562,12 @@ export default async function plugin(bb: BbPluginApi) {
       });
     }
     touchMap(map.bb_thread_id);
-    await client?.react(message.channelId, message.messageId, "✅");
+    await client?.react(
+      message.guildId,
+      message.channelId,
+      message.messageId,
+      "✅",
+    );
     return true;
   };
 
@@ -568,6 +580,7 @@ export default async function plugin(bb: BbPluginApi) {
 
     if (command.kind === "missing-code") {
       await sendToDiscord(
+        message.guildId,
         message.channelId,
         "👋 Run `bb discord pair` in BB to get a pairing code, then send `pair <code>` here.",
       );
@@ -576,7 +589,11 @@ export default async function plugin(bb: BbPluginApi) {
 
     const check = verifyPairingCode(pendingCode, command.code);
     if (!check.ok) {
-      await sendToDiscord(message.channelId, `⚠️ ${pairingFailureMessage(check.reason)}`);
+      await sendToDiscord(
+        message.guildId,
+        message.channelId,
+        `⚠️ ${pairingFailureMessage(check.reason)}`,
+      );
       return;
     }
 
@@ -604,7 +621,7 @@ export default async function plugin(bb: BbPluginApi) {
     bb.log.info(
       `Discord paired: guild=${message.guildId} user=${message.authorId} channel=${message.channelId}`,
     );
-    await sendToDiscord(message.channelId, summary);
+    await sendToDiscord(message.guildId, message.channelId, summary);
   };
 
   const handleInbound = async (
@@ -627,6 +644,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (!existing && !message.mentioned) return;
     if (message.content.length > MAX_PROMPT_CHARS) {
       await sendToDiscord(
+        message.guildId,
         message.channelId,
         `⚠️ Prompt is too long (max ${MAX_PROMPT_CHARS} characters).`,
       );
@@ -637,7 +655,12 @@ export default async function plugin(bb: BbPluginApi) {
     if (existing) {
       try {
         if (await handleInteractionReply(existing, message)) return;
-        await client?.react(message.channelId, message.messageId, "👍");
+        await client?.react(
+          message.guildId,
+          message.channelId,
+          message.messageId,
+          "👍",
+        );
         await bb.sdk.threads.send({
           threadId: existing.bb_thread_id,
           mode: "auto",
@@ -653,6 +676,7 @@ export default async function plugin(bb: BbPluginApi) {
       } catch (error) {
         retryMessage(message.messageId);
         await sendToDiscord(
+          message.guildId,
           message.channelId,
           `⚠️ Could not send your message to BB: ${errorMessage(error)}`,
         );
@@ -663,23 +687,31 @@ export default async function plugin(bb: BbPluginApi) {
     const values = await settings.get();
     if (!isAllowedSpawnLocation(message, values.spawnChannelId)) {
       await sendToDiscord(
+        message.guildId,
         message.channelId,
         "⚠️ New BB conversations are not allowed in this channel.",
       );
       return;
     }
 
-    await client?.react(message.channelId, message.messageId, "🚀");
+    await client?.react(
+      message.guildId,
+      message.channelId,
+      message.messageId,
+      "🚀",
+    );
     try {
       const bbThreadId = await spawnThread(message.content, message);
       const thread = await bb.sdk.threads.get({ threadId: bbThreadId });
       await sendToDiscord(
+        message.guildId,
         message.channelId,
         `✅ Started BB thread \`${bbThreadId}\`${thread.title ? ` — ${thread.title}` : ""}. Future replies in this Discord channel will be forwarded without another mention.`,
       );
     } catch (error) {
       retryMessage(message.messageId);
       await sendToDiscord(
+        message.guildId,
         message.channelId,
         `⚠️ Could not start a BB thread: ${errorMessage(error)}`,
       );
@@ -772,6 +804,7 @@ export default async function plugin(bb: BbPluginApi) {
     const map = getMapByBbThread(thread.id);
     if (!map) return;
     await sendToDiscord(
+      map.guild_id,
       map.discord_channel_id,
       "🗑️ The linked BB thread was deleted. Mention the bot to start a new conversation here.",
     );
