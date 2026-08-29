@@ -238,7 +238,7 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
   bb.agents.registerTool({
     name: "discord_list_members",
     description:
-      "List members of the paired Discord server. Requires the Server Members Intent to be enabled in the Discord Developer Portal; returns a clear error when it is not.",
+      "List members of the paired Discord server through Discord's REST API. Requires Server Members Intent to be enabled for the application in the Developer Portal, but the bridge does not request member gateway events.",
     parameters: z.object({
       limit: z.number().int().min(1).max(200).optional().describe("Default 50."),
     }),

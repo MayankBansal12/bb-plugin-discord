@@ -54,3 +54,43 @@ test("every channel operation rejects a channel from another guild", async () =>
     boundary,
   );
 });
+
+test("member listing uses the REST list endpoint, not gateway member fetch", async () => {
+  const client = makeClient();
+  let requestedLimit: number | undefined;
+  let fetchCalled = false;
+  const member = {
+    id: "user-1",
+    user: { tag: "person", bot: false },
+    displayName: "Person",
+    roles: { cache: new Map([["role-1", {}]]) },
+  };
+  const guild = {
+    members: {
+      list: async ({ limit }: { limit?: number }) => {
+        requestedLimit = limit;
+        return new Map([[member.id, member]]);
+      },
+      fetch: async () => {
+        fetchCalled = true;
+        throw new Error("gateway fetch must not be used");
+      },
+    },
+  };
+  (client as unknown as { getGuild: () => Promise<unknown> }).getGuild =
+    async () => guild;
+
+  const members = await client.listMembers("guild-1", 75);
+
+  assert.equal(requestedLimit, 75);
+  assert.equal(fetchCalled, false);
+  assert.deepEqual(members, [
+    {
+      id: "user-1",
+      tag: "person",
+      displayName: "Person",
+      bot: false,
+      roleIds: ["role-1"],
+    },
+  ]);
+});

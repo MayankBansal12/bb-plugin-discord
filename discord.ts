@@ -380,7 +380,7 @@ export class DiscordClient {
   ): Promise<DiscordMemberSummary[]> {
     const guild = await this.getGuild(guildId);
     try {
-      const members = await guild.members.fetch({ limit });
+      const members = await guild.members.list({ limit });
       return [...members.values()].map((member) => ({
         id: member.id,
         tag: member.user.tag,
@@ -389,10 +389,10 @@ export class DiscordClient {
         roleIds: [...member.roles.cache.keys()],
       }));
     } catch (error) {
-      // The Server Members Intent is privileged and intentionally not
-      // requested at login, so this is an expected, recoverable failure.
+      // The REST endpoint requires the privileged intent to be enabled for the
+      // application, but does not require GuildMembers in the gateway identify.
       throw new Error(
-        "Could not list members. Enable Server Members Intent in the Discord Developer Portal (Bot page) if you need member listings; every other server tool works without it.",
+        "Could not list members through Discord's REST API. Enable Server Members Intent for this application in the Discord Developer Portal (Bot page); the bridge does not request the GuildMembers gateway intent.",
         { cause: error },
       );
     }

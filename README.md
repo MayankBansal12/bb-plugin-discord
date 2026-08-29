@@ -9,7 +9,7 @@ Two steps: paste a token, send one message.
 ### 1. Create and invite the bot
 
 1. In the [Discord Developer Portal](https://discord.com/developers/applications), create an application and bot.
-2. On the Bot page, copy/reset the token and enable **Message Content Intent**. Server Members Intent is optional — only member listing needs it.
+2. On the Bot page, copy/reset the token and enable **Message Content Intent**. **Server Members Intent** is optional — enable it on the application only if you want member listing. The bridge uses Discord's REST member-list endpoint and does not request member events in its gateway connection.
 3. Paste the token into BB → Settings → Plugins → Discord.
 4. Run `bb discord invite` and open the URL it prints. It is generated from the token, so there is no trip through the OAuth2 URL Generator. Add `--full` for the server-administration permission set.
 
@@ -109,7 +109,7 @@ Once paired, BB threads get Discord tools. The access level is a setting, not a 
 | Tool | Does |
 |---|---|
 | `discord_list_roles` | List roles by position. |
-| `discord_list_members` | List members (needs Server Members Intent). |
+| `discord_list_members` | List members over REST (needs Server Members Intent enabled for the application, but no member gateway intent). |
 | `discord_create_channel` | Create text/voice/category/announcement/forum/stage channels. |
 | `discord_edit_channel` | Rename, retopic, or set slowmode. |
 | `discord_manage_member_role` | Add or remove a role on a member. |
@@ -131,7 +131,7 @@ Configuration mistakes surface as sentences, not stack traces:
 
 - **Bad token** — "Discord rejected the bot token…" and the bridge stops retrying until you change it.
 - **Message Content Intent off** — Discord refuses the connection with `4014`; the plugin names the exact toggle to flip. If content still arrives empty, it warns once in the home channel.
-- **Server Members Intent off** — only `discord_list_members` fails, and it says so; every other tool keeps working.
+- **Server Members Intent off** — only the REST-backed `discord_list_members` call fails, and it says to enable the privileged intent for the application on the Developer Portal's Bot page. The gateway deliberately does not identify with `GuildMembers`; every other tool keeps working.
 - **Missing bot permissions** — reported as a permission problem with a pointer to `bb discord invite`, and sends are not retried into a rate limit.
 - **Network drops** — exponential backoff from 2s to a 60s ceiling; discord.js resumes the session itself.
 
