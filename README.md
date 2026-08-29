@@ -35,6 +35,8 @@ bb discord allow <id> # authorize another Discord user
 bb discord unpair     # forget the server and every allowed user
 ```
 
+`bb discord status` also prints the current pairing instructions while no server is authorized. If you previously configured the advanced guild and user ID settings, `unpair` clears plugin-owned users and thread mappings but cannot edit those read-only settings; it names both settings you must clear to finish revoking access.
+
 ## Security boundary
 
 This plugin can start agent work on the machine that runs BB. Treat access like shell access:
@@ -136,6 +138,8 @@ Configuration mistakes surface as sentences, not stack traces:
 - **Network drops** — exponential backoff from 2s to a 60s ceiling; discord.js resumes the session itself.
 
 Saving a new token reconnects the gateway on its own — no `bb plugin reload discord`.
+
+Pairing and connection guidance appears in `bb discord pair`, `bb discord status`, and the plugin log. The plugin deliberately does not set BB's `needs-configuration` badge: the current SDK can set that state but cannot clear it after successful pairing or a settings fix. A badge left by an older loaded version can only disappear on the next plugin load, which is the SDK's built-in clearing point.
 
 ## Development and verification
 

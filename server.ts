@@ -174,7 +174,6 @@ export default async function plugin(bb: BbPluginApi) {
   let cached: SettingsValues = await settings.get();
   let client: DiscordClient | null = null;
   let pendingCode: PendingPairingCode | null = null;
-  let lastStatusMessage: string | null = null;
   let botTag: string | null = null;
 
   // Waiters are released on abort, on a bot-token change, or on a timeout, so
@@ -204,16 +203,9 @@ export default async function plugin(bb: BbPluginApi) {
     if (next.botToken !== prev.botToken) {
       // Only the token requires a new gateway connection; everything else is
       // read per message.
-      lastStatusMessage = null;
       wakeAll();
     }
   });
-
-  const setNeedsConfiguration = (message: string): void => {
-    if (message === lastStatusMessage) return;
-    lastStatusMessage = message;
-    bb.status.needsConfiguration(message);
-  };
 
   // ---------------------------------------------------------------------
   // Pairing state
@@ -324,7 +316,6 @@ export default async function plugin(bb: BbPluginApi) {
   const announcePairing = (): void => {
     const text = pairingInstructions();
     bb.log.info(text);
-    setNeedsConfiguration(text.replace(/\n+/g, " "));
   };
 
   // ---------------------------------------------------------------------
@@ -611,8 +602,6 @@ export default async function plugin(bb: BbPluginApi) {
       user_tag: message.authorTag,
       paired_at: Date.now(),
     });
-    lastStatusMessage = null;
-
     const summary = [
       "✅ **Paired with BB.**",
       `• Server: ${message.guildName ?? message.guildId}`,
@@ -897,10 +886,15 @@ export default async function plugin(bb: BbPluginApi) {
             `Authorized users: ${effectiveAllowedUsers().join(", ") || "(none)"}`,
             `Server access: ${accessLevel()}${cached.allowDestructiveServerActions ? " (destructive actions enabled)" : ""}`,
             `Thread permission mode: ${cached.permissionMode ?? "accept-edits"}`,
+            cached.botToken && !activeGuild
+              ? `Pairing instructions:\n${pairingInstructions()}`
+              : null,
             lines.length > 0
               ? `Recent mappings:\n${lines.join("\n")}`
               : "No Discord-bridged threads yet.",
-          ].join("\n"),
+          ]
+            .filter((line): line is string => line !== null)
+            .join("\n"),
         };
       }
 
@@ -938,7 +932,6 @@ export default async function plugin(bb: BbPluginApi) {
         }
         clearPairing();
         pendingCode = null;
-        lastStatusMessage = null;
         if (legacyGuild) {
           return {
             exitCode: 1,
@@ -1060,8 +1053,8 @@ export default async function plugin(bb: BbPluginApi) {
         cached = values;
 
         if (!values.botToken) {
-          setNeedsConfiguration(
-            "Add your Discord bot token in Settings → Plugins → Discord. That is the only setting needed to begin; pairing does the rest.",
+          bb.log.warn(
+            "Discord is not configured: add the bot token in Settings → Plugins → Discord, then run `bb discord pair`.",
           );
           await waitForWake(signal);
           continue;
@@ -1075,7 +1068,6 @@ export default async function plugin(bb: BbPluginApi) {
           bb.log.error(`Discord gateway stopped: ${classified.message}`);
           if (classified.needsConfiguration) {
             // Retrying cannot help until the operator changes something.
-            setNeedsConfiguration(classified.message);
             await waitForWake(signal);
             attempt = 0;
             continue;
