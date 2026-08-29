@@ -27,7 +27,7 @@
   "scripts": {
     "build": "bb plugin build",
     "check": "npm run typecheck && npm test && bb plugin types --check && bb plugin build",
-    "test": "tsx --test bridge.test.ts",
+    "test": "tsx --test bridge.test.ts pairing.test.ts tools.test.ts",
     "typecheck": "tsc --noEmit"
   }
 }

@@ -4,11 +4,19 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ES2022"],
-    "types": ["node"],
+    "lib": [
+      "ES2022"
+    ],
+    "types": [
+      "node"
+    ],
     "paths": {
-      "@bb/plugin-sdk": ["./types/bb-plugin-sdk.d.ts"],
-      "@bb/plugin-sdk/app": ["./types/bb-plugin-sdk-app.d.ts"]
+      "@bb/plugin-sdk": [
+        "./types/bb-plugin-sdk.d.ts"
+      ],
+      "@bb/plugin-sdk/app": [
+        "./types/bb-plugin-sdk-app.d.ts"
+      ]
     },
     "noEmit": true,
     "skipLibCheck": true
@@ -17,7 +25,11 @@
     "server.ts",
     "discord.ts",
     "bridge.ts",
+    "pairing.ts",
+    "tools.ts",
     "bridge.test.ts",
+    "pairing.test.ts",
+    "tools.test.ts",
     "types"
   ]
 }
