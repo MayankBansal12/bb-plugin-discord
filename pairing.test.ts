@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PermissionFlagsBits } from "discord.js";
+import { toFriendlyError } from "./discord.js";
 import {
   applicationIdFromToken,
   buildInviteUrl,
@@ -138,4 +139,30 @@ test("reconnect backoff grows and is capped", () => {
   assert.equal(retryDelayMs(1), 2_000);
   assert.equal(retryDelayMs(2), 4_000);
   assert.equal(retryDelayMs(10), 60_000);
+});
+
+test("a wrapped failure keeps its kind when the service re-classifies it", () => {
+  // discord.ts wraps gateway failures so the operator wording survives. The
+  // service then classifies again; before this was handled, the wrapped
+  // message fell through to "unknown" and a bad token entered the reconnect
+  // backoff loop instead of stopping.
+  const wrapped = toFriendlyError(
+    Object.assign(new Error("An invalid token was provided."), {
+      code: "TokenInvalid",
+    }),
+  );
+  const again = classifyDiscordError(wrapped);
+  assert.equal(again.kind, "invalid-token");
+  assert.equal(again.needsConfiguration, true);
+  assert.match(again.message, /Reset Token/);
+
+  // Wrapping again must not change the verdict: extra hops between the
+  // gateway and the service never alter the retry policy.
+  assert.deepEqual(classifyDiscordError(toFriendlyError(wrapped)), again);
+
+  const permissions = classifyDiscordError(
+    toFriendlyError(Object.assign(new Error("Missing Permissions"), { code: 50013 })),
+  );
+  assert.equal(permissions.kind, "missing-permissions");
+  assert.equal(permissions.needsConfiguration, false);
 });

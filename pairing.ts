@@ -230,6 +230,16 @@ export type DiscordErrorKind =
   | "network"
   | "unknown";
 
+/** Kinds that a retry cannot fix; the operator has to change something. */
+const NEEDS_CONFIGURATION: ReadonlySet<DiscordErrorKind> = new Set([
+  "invalid-token",
+  "disallowed-intents",
+]);
+
+export function needsConfigurationFor(kind: DiscordErrorKind): boolean {
+  return NEEDS_CONFIGURATION.has(kind);
+}
+
 export interface ClassifiedDiscordError {
   kind: DiscordErrorKind;
   /** Operator-facing sentence, safe to show in BB status and in Discord. */
@@ -251,12 +261,24 @@ export function classifyDiscordError(error: unknown): ClassifiedDiscordError {
   const text = raw.toLowerCase();
   const code = errorCode(error);
 
+  const tagged =
+    error && typeof error === "object" && "discordErrorKind" in error
+      ? (error as { discordErrorKind?: DiscordErrorKind }).discordErrorKind
+      : undefined;
+  if (tagged) {
+    return {
+      kind: tagged,
+      message: raw,
+      needsConfiguration: needsConfigurationFor(tagged),
+    };
+  }
+
   if (code === 4014 || text.includes("disallowed intents")) {
     return {
       kind: "disallowed-intents",
       message:
         "Discord rejected the connection because a privileged intent is off. Open the Developer Portal → your application → Bot and enable Message Content Intent, then try again.",
-      needsConfiguration: true,
+      needsConfiguration: needsConfigurationFor("disallowed-intents"),
     };
   }
   if (
@@ -269,7 +291,7 @@ export function classifyDiscordError(error: unknown): ClassifiedDiscordError {
       kind: "invalid-token",
       message:
         "Discord rejected the bot token. Copy it again from the Developer Portal → Bot → Reset Token and paste it into the Discord plugin settings.",
-      needsConfiguration: true,
+      needsConfiguration: needsConfigurationFor("invalid-token"),
     };
   }
   if (code === 50001 || code === 50013 || text.includes("missing permissions") || text.includes("missing access")) {
@@ -277,7 +299,7 @@ export function classifyDiscordError(error: unknown): ClassifiedDiscordError {
       kind: "missing-permissions",
       message:
         "The bot lacks permission for that action in this server. Re-invite it with `bb discord invite` or grant the permission to its role.",
-      needsConfiguration: false,
+      needsConfiguration: needsConfigurationFor("missing-permissions"),
     };
   }
   if (text.includes("guildmembers") || text.includes("members intent")) {
@@ -285,21 +307,21 @@ export function classifyDiscordError(error: unknown): ClassifiedDiscordError {
       kind: "missing-members-intent",
       message:
         "Listing members needs Server Members Intent, which is off. Enable it in the Developer Portal → Bot, or skip member operations.",
-      needsConfiguration: false,
+      needsConfiguration: needsConfigurationFor("missing-members-intent"),
     };
   }
   if (code === 10003 || code === 10004 || code === 10007 || code === 10011 || code === 10008) {
     return {
       kind: "not-found",
       message: `Discord could not find that resource: ${raw}`,
-      needsConfiguration: false,
+      needsConfiguration: needsConfigurationFor("not-found"),
     };
   }
   if (code === 429 || text.includes("rate limit")) {
     return {
       kind: "rate-limited",
       message: "Discord is rate limiting the bot. Retrying shortly.",
-      needsConfiguration: false,
+      needsConfiguration: needsConfigurationFor("rate-limited"),
     };
   }
   if (
@@ -313,10 +335,14 @@ export function classifyDiscordError(error: unknown): ClassifiedDiscordError {
     return {
       kind: "network",
       message: `Could not reach Discord: ${raw}`,
-      needsConfiguration: false,
+      needsConfiguration: needsConfigurationFor("network"),
     };
   }
-  return { kind: "unknown", message: raw, needsConfiguration: false };
+  return {
+    kind: "unknown",
+    message: raw,
+    needsConfiguration: needsConfigurationFor("unknown"),
+  };
 }
 
 /** Exponential backoff with a ceiling, used between gateway login attempts. */
