@@ -3,8 +3,10 @@
 import type { BbPluginApi } from "@bb/plugin-sdk";
 import {
   describePendingInteraction,
+  discordSessionName,
   isAllowedSpawnLocation,
   parseDiscordIds,
+  routeDiscordMessage,
   resolveInteractionReply,
   type PendingInteractionLike,
 } from "./bridge.js";
@@ -78,11 +80,13 @@ const migrations = [
     user_tag TEXT,
     added_at INTEGER NOT NULL
   )`,
+  `ALTER TABLE discord_threads ADD COLUMN discord_parent_channel_id TEXT`,
 ];
 
 interface ThreadMapRow {
   discord_channel_id: string;
   discord_thread_id: string;
+  discord_parent_channel_id: string | null;
   guild_id: string;
   bb_thread_id: string;
   bb_project_id: string | null;
@@ -339,11 +343,12 @@ export default async function plugin(bb: BbPluginApi) {
   const insertMap = (row: ThreadMapRow): void => {
     db.prepare(
       `INSERT INTO discord_threads
-        (discord_channel_id, discord_thread_id, guild_id, bb_thread_id, bb_project_id, title, created_at, last_activity_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        (discord_channel_id, discord_thread_id, discord_parent_channel_id, guild_id, bb_thread_id, bb_project_id, title, created_at, last_activity_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       row.discord_channel_id,
       row.discord_thread_id,
+      row.discord_parent_channel_id,
       row.guild_id,
       row.bb_thread_id,
       row.bb_project_id,
@@ -434,8 +439,10 @@ export default async function plugin(bb: BbPluginApi) {
     text: string,
   ): Promise<boolean> => {
     const map = getMapByBbThread(bbThreadId);
-    return map && isActiveMappedGuild(map.guild_id, effectiveGuildId())
-      ? sendToDiscord(map.guild_id, map.discord_channel_id, text)
+    return map &&
+      map.discord_parent_channel_id !== null &&
+      isActiveMappedGuild(map.guild_id, effectiveGuildId())
+      ? sendToDiscord(map.guild_id, map.discord_thread_id, text)
       : false;
   };
 
@@ -466,10 +473,10 @@ export default async function plugin(bb: BbPluginApi) {
     return personal.id;
   };
 
-  const spawnThread = async (
+  const spawnBbThread = async (
     prompt: string,
     message: DiscordInboundMessage,
-  ): Promise<string> => {
+  ): Promise<{ id: string; projectId: string; title: string | null }> => {
     const values = await settings.get();
     const projectId = await resolveProjectId(values.defaultProjectId);
     const defaults = await bb.sdk.projects.defaultExecutionOptions({ projectId });
@@ -498,18 +505,67 @@ export default async function plugin(bb: BbPluginApi) {
       visibility: "hidden",
     });
 
+    return { id: thread.id, projectId, title: thread.title ?? null };
+  };
+
+  const createDiscordSession = async (
+    message: DiscordInboundMessage,
+  ): Promise<{ id: string; name: string }> => {
+    if (!client) throw new Error("The Discord bridge is not connected.");
+    return client.createThread(
+      message.guildId,
+      message.channelId,
+      discordSessionName(message.content),
+    );
+  };
+
+  const moveLegacyMapToSession = (
+    map: ThreadMapRow,
+    parentChannelId: string,
+    sessionChannelId: string,
+  ): ThreadMapRow => {
     const now = Date.now();
-    insertMap({
-      discord_channel_id: message.channelId,
-      discord_thread_id: message.channelId,
-      guild_id: message.guildId,
-      bb_thread_id: thread.id,
-      bb_project_id: projectId,
-      title: thread.title ?? null,
-      created_at: now,
+    const result = db.prepare(
+      `UPDATE discord_threads
+       SET discord_channel_id = ?, discord_thread_id = ?,
+           discord_parent_channel_id = ?, last_activity_at = ?
+       WHERE bb_thread_id = ? AND discord_parent_channel_id IS NULL`,
+    ).run(
+      sessionChannelId,
+      sessionChannelId,
+      parentChannelId,
+      now,
+      map.bb_thread_id,
+    );
+    if (result.changes !== 1) {
+      throw new Error("The legacy Discord conversation changed during migration.");
+    }
+    return {
+      ...map,
+      discord_channel_id: sessionChannelId,
+      discord_thread_id: sessionChannelId,
+      discord_parent_channel_id: parentChannelId,
       last_activity_at: now,
+    };
+  };
+
+  const forwardToBb = async (
+    map: ThreadMapRow,
+    message: DiscordInboundMessage,
+  ): Promise<void> => {
+    if (await handleInteractionReply(map, message)) return;
+    await bb.sdk.threads.send({
+      threadId: map.bb_thread_id,
+      mode: "auto",
+      input: [
+        {
+          type: "text",
+          text: `Discord follow-up from ${message.authorTag} (${message.authorId}):\n\n${message.content}`,
+          mentions: [],
+        },
+      ],
     });
-    return thread.id;
+    touchMap(map.bb_thread_id);
   };
 
   const handleInteractionReply = async (
@@ -556,12 +612,6 @@ export default async function plugin(bb: BbPluginApi) {
       });
     }
     touchMap(map.bb_thread_id);
-    await client?.react(
-      message.guildId,
-      message.channelId,
-      message.messageId,
-      "✅",
-    );
     return true;
   };
 
@@ -630,10 +680,16 @@ export default async function plugin(bb: BbPluginApi) {
     if (!isAuthorized(message.guildId, message.authorId)) return;
 
     const existing = getMapByDiscordChannel(message.channelId);
-
-    // Existing mapped channels accept ordinary replies. New conversations
-    // require an explicit bot mention.
-    if (!existing && !message.mentioned) return;
+    const route = routeDiscordMessage(
+      message,
+      existing
+        ? {
+            discordChannelId: existing.discord_channel_id,
+            discordParentChannelId: existing.discord_parent_channel_id,
+          }
+        : null,
+    );
+    if (route.kind === "ignore") return;
     if (message.content.length > MAX_PROMPT_CHARS) {
       await sendToDiscord(
         message.guildId,
@@ -644,27 +700,9 @@ export default async function plugin(bb: BbPluginApi) {
     }
     if (!markMessageSeen(message.messageId, message.channelId)) return;
 
-    if (existing) {
+    if (route.kind === "forward-session" && existing) {
       try {
-        if (await handleInteractionReply(existing, message)) return;
-        await client?.react(
-          message.guildId,
-          message.channelId,
-          message.messageId,
-          "👍",
-        );
-        await bb.sdk.threads.send({
-          threadId: existing.bb_thread_id,
-          mode: "auto",
-          input: [
-            {
-              type: "text",
-              text: `Discord follow-up from ${message.authorTag} (${message.authorId}):\n\n${message.content}`,
-              mentions: [],
-            },
-          ],
-        });
-        touchMap(existing.bb_thread_id);
+        await forwardToBb(existing, message);
       } catch (error) {
         retryMessage(message.messageId);
         await sendToDiscord(
@@ -677,7 +715,10 @@ export default async function plugin(bb: BbPluginApi) {
     }
 
     const values = await settings.get();
-    if (!isAllowedSpawnLocation(message, values.spawnChannelId)) {
+    if (
+      route.kind === "start-session" &&
+      !isAllowedSpawnLocation(message, values.spawnChannelId)
+    ) {
       await sendToDiscord(
         message.guildId,
         message.channelId,
@@ -686,25 +727,82 @@ export default async function plugin(bb: BbPluginApi) {
       return;
     }
 
-    await client?.react(
-      message.guildId,
-      message.channelId,
-      message.messageId,
-      "🚀",
-    );
+    if (route.kind === "migrate-legacy-session" && existing) {
+      let migrated: ThreadMapRow;
+      try {
+        const session = await createDiscordSession(message);
+        migrated = moveLegacyMapToSession(
+          existing,
+          message.channelId,
+          session.id,
+        );
+        await sendToDiscord(
+          message.guildId,
+          session.id,
+          "↪️ Continuing the existing BB conversation in this session. Messages here no longer need a mention.",
+        );
+        await client?.react(
+          message.guildId,
+          message.channelId,
+          message.messageId,
+          "🚀",
+        );
+      } catch (error) {
+        await sendToDiscord(
+          message.guildId,
+          message.channelId,
+          `⚠️ Could not move the existing BB conversation into a Discord session: ${errorMessage(error)}`,
+        );
+        return;
+      }
+
+      try {
+        await forwardToBb(migrated, {
+          ...message,
+          channelId: migrated.discord_thread_id,
+        });
+      } catch (error) {
+        await sendToDiscord(
+          message.guildId,
+          migrated.discord_thread_id,
+          `⚠️ The session is ready, but that message did not reach BB. Please repeat it here: ${errorMessage(error)}`,
+        );
+      }
+      return;
+    }
+
+    let sessionChannelId: string | null = null;
     try {
-      const bbThreadId = await spawnThread(message.content, message);
-      const thread = await bb.sdk.threads.get({ threadId: bbThreadId });
+      const session = await createDiscordSession(message);
+      sessionChannelId = session.id;
+      const thread = await spawnBbThread(message.content, message);
+      const now = Date.now();
+      insertMap({
+        discord_channel_id: session.id,
+        discord_thread_id: session.id,
+        discord_parent_channel_id: message.channelId,
+        guild_id: message.guildId,
+        bb_thread_id: thread.id,
+        bb_project_id: thread.projectId,
+        title: thread.title,
+        created_at: now,
+        last_activity_at: now,
+      });
       await sendToDiscord(
         message.guildId,
+        session.id,
+        `✅ BB session started${thread.title ? ` — ${thread.title}` : ""}. Continue here without mentioning me.`,
+      );
+      await client?.react(
+        message.guildId,
         message.channelId,
-        `✅ Started BB thread \`${bbThreadId}\`${thread.title ? ` — ${thread.title}` : ""}. Future replies in this Discord channel will be forwarded without another mention.`,
+        message.messageId,
+        "🚀",
       );
     } catch (error) {
-      retryMessage(message.messageId);
       await sendToDiscord(
         message.guildId,
-        message.channelId,
+        sessionChannelId ?? message.channelId,
         `⚠️ Could not start a BB thread: ${errorMessage(error)}`,
       );
     }
@@ -790,17 +888,19 @@ export default async function plugin(bb: BbPluginApi) {
     if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) return;
     const reason = error?.trim() || "The BB thread failed.";
     await postToThreadChannel(thread.id, `❌ **BB thread failed:** ${reason}`);
-    await postToHome(`❌ Thread \`${thread.id}\` failed: ${reason}`);
   });
 
   bb.events.on("thread.deleted", async ({ thread }) => {
     const map = getMapByBbThread(thread.id);
     if (!map) return;
-    if (isActiveMappedGuild(map.guild_id, effectiveGuildId())) {
+    if (
+      map.discord_parent_channel_id !== null &&
+      isActiveMappedGuild(map.guild_id, effectiveGuildId())
+    ) {
       await sendToDiscord(
         map.guild_id,
-        map.discord_channel_id,
-        "🗑️ The linked BB thread was deleted. Mention the bot to start a new conversation here.",
+        map.discord_thread_id,
+        "🗑️ The linked BB thread was deleted. Mention me in the parent channel to start a new conversation.",
       );
     }
     const removeMap = db.transaction(() => {

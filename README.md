@@ -1,6 +1,6 @@
 # bb-plugin-discord
 
-Control BB agent threads from Discord. Mention the bot to create a linked BB thread, continue chatting in the same Discord channel without repeated mentions, answer supported BB interactions, and receive per-turn lifecycle updates. With full server access granted, BB can also administer the paired Discord server.
+Control BB agent threads from Discord. Mention the bot in a channel to open a dedicated Discord session thread, continue there without repeated mentions, answer supported BB interactions, and receive per-turn lifecycle updates. With full server access granted, BB can also administer the paired Discord server.
 
 ## Setup
 
@@ -12,6 +12,8 @@ Two steps: paste a token, send one message.
 2. On the Bot page, copy/reset the token and enable **Message Content Intent**. **Server Members Intent** is optional — enable it on the application only if you want member listing. The bridge uses Discord's REST member-list endpoint and does not request member events in its gateway connection.
 3. Paste the token into BB → Settings → Plugins → Discord.
 4. Run `bb discord invite` and open the URL it prints. It is generated from the token, so there is no trip through the OAuth2 URL Generator. Add `--full` for the server-administration permission set.
+
+The default `messages` invite includes **Create Public Threads** and **Send Messages in Threads**, which the session model requires. If the bot was invited before those permissions were added to its role, re-run `bb discord invite` and authorize the updated invite.
 
 ### 2. Pair a server
 
@@ -73,7 +75,11 @@ Start a conversation by mentioning the bot anywhere in the paired server:
 @bb inspect the failing login tests
 ```
 
-Once linked, every message from an allowlisted user in that Discord channel is forwarded as a follow-up without another mention. BB's final response for each turn is sent back to the channel.
+The bot creates a Discord thread named from that request and links a new BB thread to it. The initiating mention gets a 🚀 reaction once the session is established. Continue inside the Discord thread: every message from an allowlisted user is forwarded without another mention, and BB's replies and interaction prompts return there.
+
+The parent channel remains ordinary Discord space. Unmentioned messages there are ignored completely — they are not forwarded and receive no reaction. Mention the bot again in the parent channel whenever you want a separate session.
+
+Upgrades preserve older channel-bound mappings. Their parent-channel chatter becomes mention-only immediately; the next explicit mention moves the existing BB conversation into a newly named Discord session thread. Until that handoff, lifecycle output is held back rather than posted into the parent channel.
 
 When BB asks one question, reply normally. For several questions, reply with numbered lines:
 
@@ -159,11 +165,11 @@ bb plugin list
 bb plugin logs discord -n 100
 ```
 
-The Gateway connection runs as a supervised `bb.background.service`. Discord.js handles gateway reconnects, and outbound message chunks receive bounded retries. Deduplication state, pairing, and channel ↔ BB-thread mappings are stored in the plugin SQLite database.
+The Gateway connection runs as a supervised `bb.background.service`. Discord.js handles gateway reconnects, and outbound message chunks receive bounded retries. Deduplication state, pairing, and Discord-session ↔ BB-thread mappings are stored in the plugin SQLite database.
 
 ## Current scope
 
-- One Discord channel/thread maps to one BB thread.
+- Each bot mention in a normal channel opens a separate Discord session thread mapped to one BB thread.
 - One paired guild with one or more allowlisted users.
 - Replies are per turn, not token-streamed.
 - Plain text and approval/question interactions are bridged; multiple simultaneous interactions must be resolved in BB.
