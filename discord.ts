@@ -141,11 +141,26 @@ export function requireChannelInGuild(
     !("guildId" in channel) ||
     channel.guildId !== guildId
   ) {
-    throw new Error(
+    throw new DiscordChannelBoundaryError(
       `Channel ${channelId} is not in the paired Discord server.`,
     );
   }
   return channel;
+}
+
+/** A fetched id resolved outside the caller's paired-guild boundary. */
+export class DiscordChannelBoundaryError extends Error {
+  override readonly name = "DiscordChannelBoundaryError";
+}
+
+/** Permanent channel failures should detach a live Discord/BB session. */
+export function isUnavailableDiscordChannelError(error: unknown): boolean {
+  const kind = classifyDiscordError(error).kind;
+  return (
+    error instanceof DiscordChannelBoundaryError ||
+    kind === "not-found" ||
+    kind === "missing-permissions"
+  );
 }
 
 export class DiscordClient {
@@ -221,7 +236,7 @@ export class DiscordClient {
     channelId: string,
     text: string,
   ): Promise<void> {
-    const channel = await this.fetchGuildChannel(guildId, channelId);
+    const channel = await this.fetchGuildChannel(guildId, channelId, true);
     if (!channel || !("send" in channel)) {
       throw new Error(`Channel ${channelId} is not text-sendable`);
     }
@@ -236,7 +251,7 @@ export class DiscordClient {
   }
 
   async sendTyping(guildId: string, channelId: string): Promise<void> {
-    const channel = await this.fetchGuildChannel(guildId, channelId);
+    const channel = await this.fetchGuildChannel(guildId, channelId, true);
     if (!channel.isTextBased() || !("sendTyping" in channel)) {
       throw new Error(`Channel ${channelId} does not support typing indicators.`);
     }
@@ -413,9 +428,8 @@ export class DiscordClient {
     } catch (error) {
       // The REST endpoint requires the privileged intent to be enabled for the
       // application, but does not require GuildMembers in the gateway identify.
-      throw new Error(
-        "Could not list members through Discord's REST API. Enable Server Members Intent for this application in the Discord Developer Portal (Bot page); the bridge does not request the GuildMembers gateway intent.",
-        { cause: error },
+      throw toFriendlyError(
+        new Error("GuildMembers intent is disabled.", { cause: error }),
       );
     }
   }
@@ -584,17 +598,25 @@ export class DiscordClient {
   private async fetchGuildChannel(
     guildId: string,
     channelId: string,
+    resumeArchivedThread = false,
   ): Promise<Channel> {
     try {
       const channel = await this.client.channels.fetch(channelId);
-      return requireChannelInGuild(channel, channelId, guildId);
-    } catch (error) {
+      const guildChannel = requireChannelInGuild(channel, channelId, guildId);
       if (
-        error instanceof Error &&
-        error.message === `Channel ${channelId} is not in the paired Discord server.`
+        resumeArchivedThread &&
+        guildChannel.isThread() &&
+        guildChannel.archived
       ) {
-        throw error;
+        try {
+          await guildChannel.setArchived(false, "Resume linked BB conversation");
+        } catch (error) {
+          throw toFriendlyError(error);
+        }
       }
+      return guildChannel;
+    } catch (error) {
+      if (error instanceof DiscordChannelBoundaryError) throw error;
       this.opts.log.warn(
         `Could not fetch channel ${channelId}: ${classifyDiscordError(error).message}`,
       );
@@ -636,7 +658,7 @@ export class DiscordClient {
       guildId,
       guildName: message.guild?.name ?? null,
       authorId: message.author.id,
-      authorTag: message.author.displayName,
+      authorTag: message.author.tag,
       mentioned,
       content,
     });

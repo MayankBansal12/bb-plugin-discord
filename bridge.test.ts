@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ActiveThreadWatcher,
+  detachUnavailableSession,
   describePendingInteraction,
   discordSessionName,
   isAllowedSpawnLocation,
+  normalizeOptionalDiscordSnowflake,
   prepareDiscordSession,
   parseDiscordIds,
   pendingInteractionPrompt,
@@ -15,6 +17,10 @@ import {
   resolveInteractionReply,
   shouldAlertHomeForFailure,
 } from "./bridge.js";
+import {
+  DiscordChannelBoundaryError,
+  isUnavailableDiscordChannelError,
+} from "./discord.js";
 
 test("the active-thread watcher runs one timer only while it has targets", () => {
   const timers = new Set<unknown>();
@@ -101,6 +107,71 @@ test("watcher ticks do not overlap or fan out beyond active targets", async () =
   watcher.dispose();
 });
 
+test("the watcher self-heals a permanently unavailable Discord thread", async () => {
+  const errors: unknown[] = [];
+  const actions: string[] = [];
+  const watcher = new ActiveThreadWatcher({
+    intervalMs: 5000,
+    inspect: async () => {
+      throw new DiscordChannelBoundaryError(
+        "Channel session-1 is not in the paired Discord server.",
+      );
+    },
+    onError: async (_threadId, error) => {
+      errors.push(error);
+      if (!isUnavailableDiscordChannelError(error)) return;
+      await detachUnavailableSession({
+        stopBbThread: async () => {
+          actions.push("stop");
+        },
+        onStopError: () => {},
+        unlink: () => actions.push("unlink"),
+        notifyParent: async () => {
+          actions.push("notify-parent");
+          return true;
+        },
+        notifyHome: async () => {
+          actions.push("notify-home");
+        },
+      });
+      return "stop";
+    },
+  });
+
+  watcher.start("thread-1");
+  await watcher.tick();
+
+  assert.equal(errors.length, 1);
+  assert.deepEqual(actions, ["stop", "unlink", "notify-parent"]);
+  assert.equal(watcher.targetCount, 0);
+  assert.equal(watcher.isScheduled, false);
+});
+
+test("an unavailable session falls back to the home channel", async () => {
+  const actions: string[] = [];
+  await detachUnavailableSession({
+    stopBbThread: async () => {
+      throw new Error("already stopped");
+    },
+    onStopError: () => actions.push("stop-warning"),
+    unlink: () => actions.push("unlink"),
+    notifyParent: async () => {
+      actions.push("parent-failed");
+      return false;
+    },
+    notifyHome: async () => {
+      actions.push("notify-home");
+    },
+  });
+
+  assert.deepEqual(actions, [
+    "stop-warning",
+    "unlink",
+    "parent-failed",
+    "notify-home",
+  ]);
+});
+
 test("the same interaction announcement is never posted twice", async () => {
   const guard = new InteractionAnnouncementGuard();
   const posted = new Set<string>();
@@ -129,6 +200,37 @@ test("the same interaction announcement is never posted twice", async () => {
   assert.equal(sends, 1);
 });
 
+test("a failed interaction announcement is retried by the active watcher", async () => {
+  const guard = new InteractionAnnouncementGuard();
+  let marked = false;
+  let sends = 0;
+  const watcher = new ActiveThreadWatcher({
+    intervalMs: 5000,
+    inspect: async () => {
+      await guard.postOnce({
+        key: "thread-1:interaction-1",
+        isPosted: () => marked,
+        post: async () => {
+          sends += 1;
+          return sends > 1;
+        },
+        markPosted: () => {
+          marked = true;
+        },
+      });
+    },
+    onError: () => {},
+  });
+
+  watcher.start("thread-1");
+  await watcher.tick();
+  assert.equal(marked, false);
+  await watcher.tick();
+  assert.equal(marked, true);
+  assert.equal(sends, 2);
+  watcher.dispose();
+});
+
 test("failure alerts do not duplicate a session message in the home channel", () => {
   assert.equal(shouldAlertHomeForFailure("session", "home"), true);
   assert.equal(shouldAlertHomeForFailure("same-channel", "same-channel"), false);
@@ -142,25 +244,56 @@ test("parseDiscordIds accepts Discord snowflakes and deduplicates them", () => {
   );
 });
 
-test("spawn restriction accepts only the configured parent channel", () => {
+test("spawn restriction trims and validates its configured channel", () => {
   assert.equal(
-    isAllowedSpawnLocation(
-      { channelId: "parent", parentChannelId: null },
+    normalizeOptionalDiscordSnowflake(" 123456789012345678 "),
+    "123456789012345678",
+  );
+  assert.equal(normalizeOptionalDiscordSnowflake("  "), null);
+  assert.throws(
+    () => normalizeOptionalDiscordSnowflake("not-a-channel"),
+    /Discord channel ID/,
+  );
+});
+
+test("spawn restriction is enforced after routing identifies a launch", () => {
+  const canSpawn = (
+    message: {
+      channelId: string;
+      parentChannelId: string | null;
+      mentioned: boolean;
+    },
+    mapping: Parameters<typeof routeDiscordMessage>[1],
+    spawnChannelId: string,
+  ): boolean => {
+    const route = routeDiscordMessage(message, mapping);
+    return (
+      routeCreatesSession(route) &&
+      isAllowedSpawnLocation(message, spawnChannelId)
+    );
+  };
+
+  assert.equal(
+    canSpawn(
+      { channelId: "parent", parentChannelId: null, mentioned: true },
+      null,
       "parent",
     ),
     true,
   );
   assert.equal(
-    isAllowedSpawnLocation(
-      { channelId: "thread", parentChannelId: "parent" },
+    canSpawn(
+      { channelId: "other", parentChannelId: null, mentioned: true },
+      null,
       "parent",
     ),
     false,
   );
   assert.equal(
-    isAllowedSpawnLocation(
-      { channelId: "other", parentChannelId: null },
-      "parent",
+    canSpawn(
+      { channelId: "thread", parentChannelId: "parent", mentioned: true },
+      null,
+      "thread",
     ),
     false,
   );
