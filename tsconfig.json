@@ -1,6 +1,8 @@
 {
   "compilerOptions": {
     "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
@@ -28,6 +30,7 @@
     "pairing-ui.test.ts",
     "pairing-status.ts",
     "pairing-status.test.ts",
+    "security-invariants.test.ts",
     "discord.ts",
     "discord.test.ts",
     "bridge.ts",

@@ -56,6 +56,10 @@ export function availableToolNames(
   return names;
 }
 
+export function discordAuditReason(threadId: string): string {
+  return `Requested through BB's Discord plugin by thread ${threadId}`;
+}
+
 type ToolResult = string | { content: [{ type: "text"; text: string }]; isError: true };
 
 function toolError(message: string): ToolResult {
@@ -105,9 +109,6 @@ function json(value: unknown): string {
 }
 
 export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): void {
-  const auditReason = (threadId: string): string =>
-    "Requested through BB's Discord plugin";
-
   bb.agents.registerTool({
     name: "discord_server_info",
     description:
@@ -279,7 +280,7 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
             type,
             topic,
             parentId,
-            reason: auditReason(ctx.threadId),
+            reason: discordAuditReason(ctx.threadId),
           }),
         ),
       );
@@ -307,7 +308,7 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
             name,
             topic,
             slowmodeSeconds,
-            reason: auditReason(ctx.threadId),
+            reason: discordAuditReason(ctx.threadId),
           }),
         ),
       );
@@ -334,7 +335,7 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
           userId,
           roleId,
           action,
-          auditReason(ctx.threadId),
+          discordAuditReason(ctx.threadId),
         );
         return `Role ${roleId} ${action === "add" ? "added to" : "removed from"} ${userId}.`;
       });
@@ -370,7 +371,7 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
         const name = await state.client.deleteChannel(
           state.guildId,
           channelId,
-          auditReason(ctx.threadId),
+          discordAuditReason(ctx.threadId),
         );
         return `Deleted channel #${name} (${channelId}).`;
       });
@@ -411,7 +412,7 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
       }
       return guarded(async () => {
         await state.client.moderateMember(state.guildId, userId, action, {
-          reason: `${reason} — ${auditReason(ctx.threadId)}`,
+          reason: `${reason} — ${discordAuditReason(ctx.threadId)}`,
           timeoutMinutes,
         });
         return `Applied ${action} to ${userId}.`;

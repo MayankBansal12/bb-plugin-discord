@@ -22,14 +22,22 @@ export function pairingPanelView(
     : null;
 
   return {
-    connectionLabel: connected ? "Connected" : "Disconnected",
+    connectionLabel:
+      status.gateway.state === "connected"
+        ? "Connected"
+        : status.gateway.state === "connecting"
+          ? "Connecting"
+          : status.gateway.state === "failed"
+            ? "Connection failed"
+            : "Disconnected",
     connectionDetail: connected
       ? status.gateway.botTag
         ? `Signed in as ${status.gateway.botTag}`
         : "Discord gateway connected"
-      : status.tokenConfigured
-        ? "Trying to connect to Discord"
-        : "Add a bot token above to connect",
+      : status.gateway.message ??
+        (status.gateway.state === "connecting"
+          ? "Trying to connect to Discord"
+          : "Add a bot token above to connect"),
     serverLabel: pairing?.guildName ?? (pairing ? "Configured server" : "Not paired"),
     channelLabel: pairing
       ? pairing.channelName
@@ -49,6 +57,8 @@ export function pairingPanelView(
           : `Expires in ${formatDuration(secondsRemaining)}`,
     setupStep: !status.tokenConfigured
       ? "Save your bot token in the field above."
+      : status.gateway.state === "failed"
+        ? status.gateway.message ?? "Fix the Discord connection settings above."
       : !status.inviteUrl
         ? "Check the bot token above, then save it again."
         : !connected

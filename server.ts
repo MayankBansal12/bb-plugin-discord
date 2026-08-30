@@ -7,8 +7,10 @@ import {
   InteractionAnnouncementGuard,
   isAllowedSpawnLocation,
   parseDiscordIds,
+  prepareDiscordSession,
   pendingInteractionPrompt,
   routeDiscordMessage,
+  routeCreatesSession,
   resolveInteractionReply,
   shouldAlertHomeForFailure,
   type PendingInteractionLike,
@@ -37,7 +39,7 @@ import {
   discordRpcContract,
   type DiscordPairingStatus,
 } from "./contract.js";
-import { buildPairingStatus } from "./pairing-status.js";
+import { buildPairingStatus, pairingCommand } from "./pairing-status.js";
 
 const MAX_PROMPT_CHARS = 8000;
 const MAX_REPLY_CHARS = 1800;
@@ -189,9 +191,21 @@ export default async function plugin(bb: BbPluginApi) {
   let client: DiscordClient | null = null;
   let pendingCode: PendingPairingCode | null = null;
   let botTag: string | null = null;
+  let gatewayState: DiscordPairingStatus["gateway"]["state"] = "disconnected";
+  let gatewayMessage: string | null = null;
 
   const publishPairingState = (reason: string): void => {
     bb.realtime.publish(PAIRING_REALTIME_CHANNEL, { reason });
+  };
+
+  const setGatewayState = (
+    state: DiscordPairingStatus["gateway"]["state"],
+    message: string | null,
+    reason: string,
+  ): void => {
+    gatewayState = state;
+    gatewayMessage = message;
+    publishPairingState(reason);
   };
 
   // Waiters are released on abort, on a bot-token change, or on a timeout, so
@@ -222,6 +236,11 @@ export default async function plugin(bb: BbPluginApi) {
     if (next.botToken !== prev.botToken) {
       // Only the token requires a new gateway connection; everything else is
       // read per message.
+      setGatewayState(
+        next.botToken ? "connecting" : "disconnected",
+        null,
+        "gateway-configuration-changed",
+      );
       wakeAll();
     }
   });
@@ -323,7 +342,9 @@ export default async function plugin(bb: BbPluginApi) {
     );
 
     return buildPairingStatus({
-      gatewayConnected: client?.isReady() ?? false,
+      gatewayState,
+      gatewayMessage,
+      botUserId: client?.getUserId() ?? null,
       botTag,
       tokenConfigured: Boolean(cached.botToken),
       storedPairing: pairing
@@ -346,6 +367,10 @@ export default async function plugin(bb: BbPluginApi) {
 
   const pairingInstructions = (): string => {
     const code = ensurePairingCode();
+    const command = pairingCommand(
+      client?.getUserId() ?? null,
+      formatPairingCode(code.code),
+    );
     const invite = inviteUrlFromToken(
       cached.botToken,
       cached.serverAccess === "full" ? "full" : "messages",
@@ -359,17 +384,22 @@ export default async function plugin(bb: BbPluginApi) {
         ? `Discord connected as ${botTag}.`
         : "Discord bot token saved.",
       invite ? `Invite the bot: ${invite}` : null,
-      `Then send this in the channel you want to authorize:`,
-      `    @${botTag ?? "your bot"} pair ${formatPairingCode(code.code)}`,
-      `The code is single-use and expires in ${minutes} minute${minutes === 1 ? "" : "s"}. Run \`bb discord pair\` for a fresh one.`,
+      command
+        ? "Then send this exact command in the channel you want to authorize:"
+        : "The gateway is still identifying the bot. Run `bb discord pair` again once it connects.",
+      command ? `    ${command}` : null,
+      command
+        ? `The code is single-use and expires in ${minutes} minute${minutes === 1 ? "" : "s"}. Run \`bb discord pair\` for a fresh one.`
+        : null,
     ]
       .filter((line): line is string => line !== null)
       .join("\n");
   };
 
   const announcePairing = (): void => {
-    const text = pairingInstructions();
-    bb.log.info(text);
+    bb.log.info(
+      `Discord connected as ${botTag ?? "the configured bot"} and is awaiting pairing. Open Settings → Plugins → Discord or explicitly run \`bb discord pair\` to get the one-time command.`,
+    );
   };
 
   bb.rpc.register(discordRpcContract, {
@@ -841,6 +871,9 @@ export default async function plugin(bb: BbPluginApi) {
       try {
         await forwardToBb(existing, message);
       } catch (error) {
+        bb.log.error(
+          `Could not forward Discord session ${message.channelId} to BB: ${classifyDiscordError(error).message}`,
+        );
         retryMessage(message.messageId);
         await sendToDiscord(
           message.guildId,
@@ -853,7 +886,7 @@ export default async function plugin(bb: BbPluginApi) {
 
     const values = await settings.get();
     if (
-      route.kind === "start-session" &&
+      routeCreatesSession(route) &&
       !isAllowedSpawnLocation(message, values.spawnChannelId)
     ) {
       await sendToDiscord(
@@ -887,6 +920,9 @@ export default async function plugin(bb: BbPluginApi) {
           "🚀",
         );
       } catch (error) {
+        bb.log.error(
+          `Could not migrate legacy Discord session ${message.channelId}: ${classifyDiscordError(error).message}`,
+        );
         await sendToDiscord(
           message.guildId,
           message.channelId,
@@ -901,6 +937,9 @@ export default async function plugin(bb: BbPluginApi) {
           channelId: migrated.discord_thread_id,
         });
       } catch (error) {
+        bb.log.error(
+          `Could not forward migrated Discord session ${migrated.discord_thread_id} to BB: ${classifyDiscordError(error).message}`,
+        );
         await sendToDiscord(
           message.guildId,
           migrated.discord_thread_id,
@@ -910,11 +949,27 @@ export default async function plugin(bb: BbPluginApi) {
       return;
     }
 
-    let sessionChannelId: string | null = null;
     try {
-      const session = await createDiscordSession(message);
-      sessionChannelId = session.id;
-      const thread = await spawnBbThread(message.content, message);
+      const { thread, session } = await prepareDiscordSession({
+        spawnBbThread: () => spawnBbThread(message.content, message),
+        createDiscordSession: () => createDiscordSession(message),
+        cleanupBbThread: async (spawned) => {
+          try {
+            await bb.sdk.threads.archive({ threadId: spawned.id });
+          } catch (cleanupError) {
+            bb.log.warn(
+              `Could not archive unlinked BB thread ${spawned.id}: ${classifyDiscordError(cleanupError).message}`,
+            );
+          }
+          try {
+            await bb.sdk.threads.stop({ threadId: spawned.id });
+          } catch (cleanupError) {
+            bb.log.warn(
+              `Could not stop unlinked BB thread ${spawned.id}: ${classifyDiscordError(cleanupError).message}`,
+            );
+          }
+        },
+      });
       const now = Date.now();
       insertMap({
         discord_channel_id: session.id,
@@ -940,9 +995,12 @@ export default async function plugin(bb: BbPluginApi) {
         "🚀",
       );
     } catch (error) {
+      bb.log.error(
+        `Could not start a Discord-backed BB session from ${message.channelId}: ${classifyDiscordError(error).message}`,
+      );
       await sendToDiscord(
         message.guildId,
-        sessionChannelId ?? message.channelId,
+        message.channelId,
         "I couldn’t start this BB conversation. Check the Discord plugin settings in BB, then mention me again.",
       );
     }
@@ -1010,6 +1068,9 @@ export default async function plugin(bb: BbPluginApi) {
     activeThreadWatcher.stop(thread.id);
     const map = getMapByBbThread(thread.id);
     if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) return;
+    bb.log.error(
+      `Discord-linked BB thread ${thread.id} failed: ${classifyDiscordError(error).message}`,
+    );
     const sessionPosted = await postToThreadChannel(
       thread.id,
       "BB couldn’t finish that turn. Try your request again here; if it keeps failing, check BB for details.",
@@ -1129,7 +1190,7 @@ export default async function plugin(bb: BbPluginApi) {
             `Server access: ${accessLevel()}${cached.allowDestructiveServerActions ? " (destructive actions enabled)" : ""}`,
             `Thread permission mode: ${cached.permissionMode ?? "accept-edits"}`,
             cached.botToken && !activeGuild
-              ? `Pairing instructions:\n${pairingInstructions()}`
+              ? "Pairing: waiting for an explicit `bb discord pair` request (the one-time code is hidden from status)."
               : null,
             lines.length > 0
               ? `Recent conversations:\n${lines.map((line) => `• ${line}`).join("\n")}`
@@ -1245,6 +1306,7 @@ export default async function plugin(bb: BbPluginApi) {
     token: string,
     signal: AbortSignal,
   ): Promise<void> => {
+    setGatewayState("connecting", null, "gateway-connecting");
     const created = new DiscordClient({
       token,
       isAuthorized,
@@ -1253,7 +1315,7 @@ export default async function plugin(bb: BbPluginApi) {
       onMessage: handleInbound,
       onReady: async (tag) => {
         botTag = tag;
-        publishPairingState("gateway-connected");
+        setGatewayState("connected", null, "gateway-connected");
         if (isPaired()) {
           await postToHome(`🟢 Discord BB bridge is online as ${tag}.`);
         } else {
@@ -1261,7 +1323,11 @@ export default async function plugin(bb: BbPluginApi) {
         }
       },
       onConnectionStateChange: (ready) => {
-        publishPairingState(ready ? "gateway-connected" : "gateway-disconnected");
+        setGatewayState(
+          ready ? "connected" : "connecting",
+          null,
+          ready ? "gateway-connected" : "gateway-reconnecting",
+        );
         if (ready) {
           activeThreadWatcher.resume();
           void activeThreadWatcher.tick();
@@ -1290,8 +1356,8 @@ export default async function plugin(bb: BbPluginApi) {
       activeThreadWatcher.pause();
       if (client === created) client = null;
       botTag = null;
-      publishPairingState("gateway-disconnected");
-      await created.destroy().catch(() => {});
+      setGatewayState("disconnected", null, "gateway-disconnected");
+      await created.destroy();
     }
   };
 
@@ -1309,6 +1375,7 @@ export default async function plugin(bb: BbPluginApi) {
           bb.status.needsConfiguration(
             "Add your bot token in Settings → Plugins → Discord. You can finish pairing in the connection panel there.",
           );
+          setGatewayState("disconnected", null, "gateway-not-configured");
           await waitForWake(signal);
           continue;
         }
@@ -1321,11 +1388,14 @@ export default async function plugin(bb: BbPluginApi) {
           bb.log.error(`Discord gateway stopped: ${classified.message}`);
           if (classified.needsConfiguration) {
             // Retrying cannot help until the operator changes something.
+            setGatewayState("failed", classified.message, "gateway-failed");
+            bb.status.needsConfiguration(classified.message);
             await waitForWake(signal);
             attempt = 0;
             continue;
           }
           attempt += 1;
+          setGatewayState("connecting", null, "gateway-retrying");
           const delayMs = retryDelayMs(attempt);
           bb.log.warn(
             `Reconnecting to Discord in ${Math.round(delayMs / 1000)}s (attempt ${attempt}).`,
@@ -1349,7 +1419,7 @@ export default async function plugin(bb: BbPluginApi) {
     wakeAll();
     activeThreadWatcher.dispose();
     if (client) {
-      await client.destroy().catch(() => {});
+      await client.destroy();
       client = null;
     }
   });

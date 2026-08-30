@@ -213,6 +213,26 @@ export function isAllowedSpawnLocation(
   return !spawnChannelId || location.channelId === spawnChannelId;
 }
 
+export function routeCreatesSession(route: DiscordInboundRoute): boolean {
+  return route.kind === "start-session" || route.kind === "migrate-legacy-session";
+}
+
+/** Spawn BB first so a failed spawn can never leave a Discord session behind. */
+export async function prepareDiscordSession<TThread, TSession>(operations: {
+  spawnBbThread: () => Promise<TThread>;
+  createDiscordSession: () => Promise<TSession>;
+  cleanupBbThread: (thread: TThread) => Promise<void>;
+}): Promise<{ thread: TThread; session: TSession }> {
+  const thread = await operations.spawnBbThread();
+  try {
+    const session = await operations.createDiscordSession();
+    return { thread, session };
+  } catch (error) {
+    await operations.cleanupBbThread(thread);
+    throw error;
+  }
+}
+
 export function shouldAlertHomeForFailure(
   sessionChannelId: string,
   homeChannelId: string | null,

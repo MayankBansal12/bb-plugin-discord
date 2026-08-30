@@ -3,7 +3,9 @@ import test from "node:test";
 import { buildPairingStatus } from "./pairing-status.js";
 
 const base = {
-  gatewayConnected: false,
+  gatewayState: "disconnected" as const,
+  gatewayMessage: null,
+  botUserId: null,
   botTag: null,
   tokenConfigured: true,
   storedPairing: null,
@@ -15,17 +17,26 @@ const base = {
 test("the RPC status formats a pairing command without exposing a token", () => {
   const result = buildPairingStatus({
     ...base,
-    gatewayConnected: true,
+    gatewayState: "connected",
+    botUserId: "123456789012345678",
     botTag: "BB Bot",
     pairingCode: { code: "ABC123", expiresAt: 10_000 },
   });
   assert.deepEqual(result.pairingCode, {
     code: "ABC-123",
     expiresAt: 10_000,
-    command: "@BB Bot pair ABC-123",
+    command: "<@123456789012345678> pair ABC-123",
   });
   assert.equal(JSON.stringify(result).includes("botToken"), false);
   assert.equal(JSON.stringify(result).includes("token-value"), false);
+});
+
+test("the RPC never invents a plain-text mention before Discord identifies the bot", () => {
+  const result = buildPairingStatus({
+    ...base,
+    pairingCode: { code: "ABC123", expiresAt: 10_000 },
+  });
+  assert.equal(result.pairingCode?.command, null);
 });
 
 test("stored pairing wins over legacy settings in the RPC status", () => {

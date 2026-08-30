@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DiscordClient, type DiscordClientOptions } from "./discord.js";
 
-function makeClient(): DiscordClient {
+function makeClient(
+  log: DiscordClientOptions["log"] = {
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+  },
+): DiscordClient {
   const opts: DiscordClientOptions = {
     token: "unused-in-unit-tests",
     isAuthorized: () => false,
@@ -11,10 +17,33 @@ function makeClient(): DiscordClient {
     onMessage: () => {},
     onReady: () => {},
     onSuspectedMissingContentIntent: () => {},
-    log: { info: () => {}, warn: () => {}, error: () => {} },
+    log,
   };
   return new DiscordClient(opts);
 }
+
+test("destroy awaits and contains discord.js teardown failures", async () => {
+  const warnings: string[] = [];
+  const client = makeClient({
+    info: () => {},
+    warn: (message) => warnings.push(message),
+    error: () => {},
+  });
+  let settled = false;
+  const internal = client as unknown as {
+    client: { destroy: () => Promise<void> };
+  };
+  internal.client.destroy = async () => {
+    await Promise.resolve();
+    settled = true;
+    throw new Error("teardown exploded");
+  };
+
+  await client.destroy();
+
+  assert.equal(settled, true);
+  assert.match(warnings[0] ?? "", /teardown exploded/);
+});
 
 test("every channel operation rejects a channel from another guild", async () => {
   const client = makeClient();

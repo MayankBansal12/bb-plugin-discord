@@ -84,9 +84,10 @@ function DiscordSettingsPanel() {
   };
 
   const copyCommand = async () => {
-    if (!status?.pairingCode) return;
+    const command = status?.pairingCode?.command;
+    if (!command) return;
     try {
-      await navigator.clipboard.writeText(status.pairingCode.command);
+      await navigator.clipboard.writeText(command);
       setCopied(true);
       setError(null);
       window.setTimeout(() => setCopied(false), 2_000);
@@ -163,7 +164,7 @@ function DiscordSettingsPanel() {
               <span>2</span>
               <div>
                 <strong>Send the pairing command</strong>
-                {status.pairingCode ? (
+                {status.pairingCode?.command ? (
                   <>
                     <div className="discord-code-row">
                       <code>{status.pairingCode.command}</code>
@@ -174,7 +175,11 @@ function DiscordSettingsPanel() {
                     <p className="discord-expiry">{view.expiryLabel}</p>
                   </>
                 ) : (
-                  <p>A pairing code will appear after the token is saved.</p>
+                  <p>
+                    {status.pairingCode
+                      ? "The copyable command will appear when the Discord gateway identifies the bot."
+                      : "A pairing code will appear after the token is saved."}
+                  </p>
                 )}
               </div>
             </li>
