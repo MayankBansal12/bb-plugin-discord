@@ -1148,6 +1148,21 @@ export default async function plugin(bb: BbPluginApi) {
       }
     }
 
+    // Belt and braces. The watcher is the primary announcement path because a
+    // thread blocked on an approval stays `active`, and it is stopped on the
+    // first line of this handler. But nothing guarantees every interaction
+    // kind keeps the thread active — a question BB asks at the end of a turn
+    // could land here instead. Announcing is idempotent (DB-backed
+    // `isInteractionPosted` plus the in-flight guard), so the only thing this
+    // costs is one list call, and the thing it prevents is an interaction that
+    // is never surfaced at all.
+    try {
+      await announcePendingInteractions(thread.id);
+    } catch (error) {
+      bb.log.warn(
+        `Could not announce pending interactions for ${thread.id}: ${classifyDiscordError(error).message}`,
+      );
+    }
   });
 
   bb.events.on("thread.failed", async ({ thread, error }) => {
