@@ -36,8 +36,11 @@ bb discord invite
 Send the printed command in Discord:
 
 ```text
-@bb pair ABC-123
+<@123456789012345678> pair ABC-123
 ```
+
+BB fills in the bot's actual user id. Copy the command exactly as printed;
+Discord resolves the raw `<@BOT_USER_ID>` syntax as a real bot mention.
 
 The bot confirms the server, authorized user, and home channel. No Developer Mode or copied snowflake IDs are needed.
 
@@ -49,7 +52,7 @@ bb discord allow <id> # authorize another Discord user
 bb discord unpair     # forget the server and every allowed user
 ```
 
-`bb discord status` also prints the current pairing instructions while no server is authorized. If you previously configured the advanced guild and user ID settings, the UI and CLI unpair actions clear plugin-owned users and conversation mappings but cannot edit those settings; both surfaces tell you which fields to clear to finish revoking access.
+`bb discord status` reports that pairing is pending but deliberately omits the live code. Use the explicit `bb discord pair` operator command to reveal it. If you previously configured the advanced guild and user ID settings, the UI and CLI unpair actions clear plugin-owned users and conversation mappings but cannot edit those settings; both surfaces tell you which fields to clear to finish revoking access.
 
 ## Security boundary
 
@@ -157,7 +160,7 @@ Configuration mistakes surface as sentences, not stack traces:
 
 Saving a new token reconnects the gateway on its own — no `bb plugin reload discord`.
 
-BB's `needs-configuration` badge is used only for a missing bot token. Pairing and connection state stays live in the Discord connection panel through realtime invalidations and RPC refreshes, with a slow safety refresh after missed signals.
+BB's `needs-configuration` badge is used for standing token and gateway-intent configuration failures. Pairing and connection state stays live in the Discord connection panel through realtime invalidations and RPC refreshes, with a slow safety refresh after missed signals.
 
 ## Development and verification
 

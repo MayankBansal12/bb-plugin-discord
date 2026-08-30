@@ -12,7 +12,9 @@ export interface StoredPairingStatus {
 }
 
 export interface PairingStatusInput {
-  gatewayConnected: boolean;
+  gatewayState: DiscordPairingStatus["gateway"]["state"];
+  gatewayMessage: string | null;
+  botUserId: string | null;
   botTag: string | null;
   tokenConfigured: boolean;
   storedPairing: StoredPairingStatus | null;
@@ -20,6 +22,13 @@ export interface PairingStatusInput {
   pairingCode: PendingPairingCode | null;
   inviteUrl: string | null;
   notice?: string | null;
+}
+
+export function pairingCommand(
+  botUserId: string | null,
+  formattedCode: string,
+): string | null {
+  return botUserId ? `<@${botUserId}> pair ${formattedCode}` : null;
 }
 
 /** Shape SQLite and secret-derived state into the strict, secret-free RPC DTO. */
@@ -33,8 +42,9 @@ export function buildPairingStatus(
 
   return {
     gateway: {
-      state: input.gatewayConnected ? "connected" : "disconnected",
+      state: input.gatewayState,
       botTag: input.botTag,
+      message: input.gatewayMessage,
     },
     tokenConfigured: input.tokenConfigured,
     paired: activeGuildId !== null,
@@ -66,7 +76,7 @@ export function buildPairingStatus(
         ? {
             code: formattedCode,
             expiresAt: input.pairingCode.expiresAt,
-            command: `@${input.botTag ?? "your bot"} pair ${formattedCode}`,
+            command: pairingCommand(input.botUserId, formattedCode),
           }
         : null,
     inviteUrl: input.inviteUrl,

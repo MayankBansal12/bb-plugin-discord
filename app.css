@@ -9,6 +9,7 @@
 .discord-card__heading:first-child { justify-content: flex-start; }
 .discord-dot { width: .5rem; height: .5rem; border-radius: 999px; background: var(--muted-foreground); }
 .discord-dot--connected { background: var(--primary); }
+.discord-dot--failed { background: var(--destructive); }
 .discord-badge { margin-left: auto; border-radius: 999px; background: var(--muted); padding: .2rem .5rem; color: var(--muted-foreground); font-size: .6875rem; font-weight: 600; }
 .discord-details { display: grid; gap: .4rem; margin: .75rem 0 0; }
 .discord-details div { display: grid; grid-template-columns: 4rem minmax(0, 1fr); gap: .5rem; font-size: .8125rem; }

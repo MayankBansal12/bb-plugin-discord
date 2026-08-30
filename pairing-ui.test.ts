@@ -11,7 +11,7 @@ function status(
   overrides: Partial<DiscordPairingStatus> = {},
 ): DiscordPairingStatus {
   return {
-    gateway: { state: "disconnected", botTag: null },
+    gateway: { state: "disconnected", botTag: null, message: null },
     tokenConfigured: false,
     paired: false,
     pairing: null,
@@ -33,7 +33,7 @@ test("the panel gives a terminal-free next step before a token exists", () => {
 test("the panel shows the bot identity and complete stored pairing", () => {
   const view = pairingPanelView(
     status({
-      gateway: { state: "connected", botTag: "BB Bot" },
+      gateway: { state: "connected", botTag: "BB Bot", message: null },
       tokenConfigured: true,
       paired: true,
       pairing: {
@@ -82,7 +82,7 @@ test("pairing-code expiry is visible and becomes actionable", () => {
   const active = pairingPanelView(
     status({
       tokenConfigured: true,
-      gateway: { state: "connected", botTag: "BB Bot" },
+      gateway: { state: "connected", botTag: "BB Bot", message: null },
       inviteUrl: "https://discord.com/oauth2/authorize?client_id=1",
       pairingCode: { code: "ABC-123", command: "@BB Bot pair ABC-123", expiresAt: 61_000 },
     }),
@@ -96,6 +96,22 @@ test("pairing-code expiry is visible and becomes actionable", () => {
     1_000,
   );
   assert.equal(expired.expiryLabel, "Expired — generate a new code");
+});
+
+test("a parked configuration failure is distinct from connecting and actionable", () => {
+  const message =
+    "Discord rejected the bot token. Reset Token in the Discord Developer Portal, save the new token in BB, and reconnect.";
+  const view = pairingPanelView(
+    status({
+      tokenConfigured: true,
+      gateway: { state: "failed", botTag: null, message },
+    }),
+    1_000,
+  );
+  assert.equal(view.connectionLabel, "Connection failed");
+  assert.equal(view.connectionDetail, message);
+  assert.equal(view.setupStep, message);
+  assert.doesNotMatch(view.connectionDetail, /trying/i);
 });
 
 test("duration copy stays compact around the minute boundary", () => {

@@ -3,8 +3,9 @@ import { z } from "zod";
 
 const pairingStatusSchema = z.object({
   gateway: z.object({
-    state: z.enum(["connected", "disconnected"]),
+    state: z.enum(["disconnected", "connecting", "connected", "failed"]),
     botTag: z.string().nullable(),
+    message: z.string().nullable(),
   }).strict(),
   tokenConfigured: z.boolean(),
   paired: z.boolean(),
@@ -21,7 +22,7 @@ const pairingStatusSchema = z.object({
   pairingCode: z.object({
     code: z.string(),
     expiresAt: z.number().int(),
-    command: z.string(),
+    command: z.string().nullable(),
   }).strict().nullable(),
   inviteUrl: z.string().url().nullable(),
   legacySettingsRequireCleanup: z.boolean(),
