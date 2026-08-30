@@ -213,6 +213,13 @@ export function isAllowedSpawnLocation(
   return !spawnChannelId || location.channelId === spawnChannelId;
 }
 
+export function shouldAlertHomeForFailure(
+  sessionChannelId: string,
+  homeChannelId: string | null,
+): boolean {
+  return homeChannelId !== null && homeChannelId !== sessionChannelId;
+}
+
 /**
  * Decide whether an authorized inbound message belongs to a BB conversation.
  * Normal channels are mention-only launchers; Discord threads are sessions.

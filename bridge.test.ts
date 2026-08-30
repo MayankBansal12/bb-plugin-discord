@@ -11,6 +11,7 @@ import {
   InteractionAnnouncementGuard,
   routeDiscordMessage,
   resolveInteractionReply,
+  shouldAlertHomeForFailure,
 } from "./bridge.js";
 
 test("the active-thread watcher runs one timer only while it has targets", () => {
@@ -124,6 +125,12 @@ test("the same interaction announcement is never posted twice", async () => {
   assert.equal(await first, true);
   assert.equal(await attempt(), false);
   assert.equal(sends, 1);
+});
+
+test("failure alerts do not duplicate a session message in the home channel", () => {
+  assert.equal(shouldAlertHomeForFailure("session", "home"), true);
+  assert.equal(shouldAlertHomeForFailure("same-channel", "same-channel"), false);
+  assert.equal(shouldAlertHomeForFailure("session", null), false);
 });
 
 test("parseDiscordIds accepts Discord snowflakes and deduplicates them", () => {

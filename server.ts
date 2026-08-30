@@ -10,6 +10,7 @@ import {
   pendingInteractionPrompt,
   routeDiscordMessage,
   resolveInteractionReply,
+  shouldAlertHomeForFailure,
   type PendingInteractionLike,
 } from "./bridge.js";
 import { DiscordClient, type DiscordInboundMessage } from "./discord.js";
@@ -442,8 +443,9 @@ export default async function plugin(bb: BbPluginApi) {
     text: string,
   ): Promise<boolean> => {
     const map = getMapByBbThread(bbThreadId);
+    // A legacy row stores its original bound channel in discord_thread_id.
+    // Keep delivering there until a mention migrates it into a session.
     return map &&
-      map.discord_parent_channel_id !== null &&
       isActiveMappedGuild(map.guild_id, effectiveGuildId())
       ? sendToDiscord(map.guild_id, map.discord_thread_id, text)
       : false;
@@ -933,7 +935,26 @@ export default async function plugin(bb: BbPluginApi) {
     const map = getMapByBbThread(thread.id);
     if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) return;
     const reason = error?.trim() || "The BB thread failed.";
-    await postToThreadChannel(thread.id, `❌ **BB thread failed:** ${reason}`);
+    const sessionPosted = await postToThreadChannel(
+      thread.id,
+      `❌ **BB thread failed:** ${reason}`,
+    );
+    const failureHomeChannelId = homeChannelId();
+    if (
+      shouldAlertHomeForFailure(
+        map.discord_thread_id,
+        failureHomeChannelId,
+      )
+    ) {
+      const label = map.title?.trim() || "a Discord-linked BB session";
+      await sendToDiscord(
+        map.guild_id,
+        failureHomeChannelId!,
+        sessionPosted
+          ? `⚠️ **BB turn failed:** ${label}. See <#${map.discord_thread_id}> for details.`
+          : `❌ **BB turn failed:** ${label} — ${reason}`,
+      );
+    }
   });
 
   bb.events.on("thread.deleted", async ({ thread }) => {
