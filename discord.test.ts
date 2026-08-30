@@ -34,6 +34,10 @@ test("every channel operation rejects a channel from another guild", async () =>
     boundary,
   );
   await assert.rejects(
+    () => client.sendTyping("guild-1", "channel-1"),
+    boundary,
+  );
+  await assert.rejects(
     () => client.react("guild-1", "channel-1", "message-1", "✅"),
     boundary,
   );

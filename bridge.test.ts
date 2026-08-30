@@ -1,15 +1,130 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ActiveThreadWatcher,
   describePendingInteraction,
   discordSessionName,
   isAllowedSpawnLocation,
   parseDiscordIds,
   pendingInteractionPrompt,
   pendingInteractionReplyInstructions,
+  InteractionAnnouncementGuard,
   routeDiscordMessage,
   resolveInteractionReply,
 } from "./bridge.js";
+
+test("the active-thread watcher runs one timer only while it has targets", () => {
+  const timers = new Set<unknown>();
+  let nextTimer = 0;
+  const watcher = new ActiveThreadWatcher({
+    intervalMs: 5000,
+    inspect: async () => {},
+    onError: () => {},
+    scheduler: {
+      setInterval: () => {
+        const timer = ++nextTimer;
+        timers.add(timer);
+        return timer;
+      },
+      clearInterval: (timer) => timers.delete(timer),
+    },
+  });
+
+  watcher.start("thread-1");
+  watcher.start("thread-2");
+  assert.equal(watcher.targetCount, 2);
+  assert.equal(watcher.isScheduled, true);
+  assert.equal(timers.size, 1);
+
+  watcher.stop("thread-1");
+  assert.equal(timers.size, 1);
+  watcher.stop("thread-2");
+  assert.equal(watcher.isScheduled, false);
+  assert.equal(timers.size, 0);
+});
+
+test("the active-thread watcher pauses for gateway teardown and disposes cleanly", () => {
+  const timers = new Set<unknown>();
+  const watcher = new ActiveThreadWatcher({
+    intervalMs: 5000,
+    inspect: async () => {},
+    onError: () => {},
+    scheduler: {
+      setInterval: () => {
+        const timer = {};
+        timers.add(timer);
+        return timer;
+      },
+      clearInterval: (timer) => timers.delete(timer),
+    },
+  });
+
+  watcher.start("thread-1");
+  watcher.pause();
+  assert.equal(timers.size, 0);
+  assert.equal(watcher.targetCount, 1);
+  watcher.resume();
+  assert.equal(timers.size, 1);
+  watcher.dispose();
+  assert.equal(timers.size, 0);
+  assert.equal(watcher.targetCount, 0);
+});
+
+test("watcher ticks do not overlap or fan out beyond active targets", async () => {
+  let release: (() => void) | undefined;
+  const inspected: string[] = [];
+  const watcher = new ActiveThreadWatcher({
+    intervalMs: 5000,
+    inspect: async (threadId) => {
+      inspected.push(threadId);
+      if (threadId === "thread-1") {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+    },
+    onError: () => {},
+  });
+  watcher.start("thread-1");
+  watcher.start("thread-2");
+
+  const first = watcher.tick();
+  await Promise.resolve();
+  await watcher.tick();
+  assert.deepEqual(inspected, ["thread-1"]);
+  release?.();
+  await first;
+  assert.deepEqual(inspected, ["thread-1", "thread-2"]);
+  watcher.dispose();
+});
+
+test("the same interaction announcement is never posted twice", async () => {
+  const guard = new InteractionAnnouncementGuard();
+  const posted = new Set<string>();
+  let sends = 0;
+  let release: (() => void) | undefined;
+  const attempt = () =>
+    guard.postOnce({
+      key: "thread-1:interaction-1",
+      isPosted: () => posted.has("interaction-1"),
+      post: async () => {
+        sends += 1;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return true;
+      },
+      markPosted: () => posted.add("interaction-1"),
+    });
+
+  const first = attempt();
+  await Promise.resolve();
+  assert.equal(await attempt(), false);
+  release?.();
+  assert.equal(await first, true);
+  assert.equal(await attempt(), false);
+  assert.equal(sends, 1);
+});
 
 test("parseDiscordIds accepts Discord snowflakes and deduplicates them", () => {
   assert.deepEqual(

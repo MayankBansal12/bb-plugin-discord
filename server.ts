@@ -2,7 +2,9 @@
 
 import type { BbPluginApi } from "@bb/plugin-sdk";
 import {
+  ActiveThreadWatcher,
   discordSessionName,
+  InteractionAnnouncementGuard,
   isAllowedSpawnLocation,
   parseDiscordIds,
   pendingInteractionPrompt,
@@ -35,6 +37,7 @@ const MAX_PROMPT_CHARS = 8000;
 const MAX_REPLY_CHARS = 1800;
 const MAX_INTERACTION_PROMPT_CHARS = 1800;
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const ACTIVE_THREAD_WATCH_INTERVAL_MS = 5000;
 
 const migrations = [
   `CREATE TABLE IF NOT EXISTS discord_threads (
@@ -457,6 +460,64 @@ export default async function plugin(bb: BbPluginApi) {
       : false;
   };
 
+  const announcementGuard = new InteractionAnnouncementGuard();
+
+  const announcePendingInteractions = async (
+    bbThreadId: string,
+  ): Promise<number> => {
+    const interactions = await bb.sdk.threads.interactions.list({
+      threadId: bbThreadId,
+    });
+    const pending = interactions.filter(
+      (interaction) => interaction.status === "pending",
+    );
+    for (const interaction of pending) {
+      const prompt = pendingInteractionPrompt(
+        interaction as PendingInteractionLike,
+        MAX_INTERACTION_PROMPT_CHARS,
+      );
+      await announcementGuard.postOnce({
+        key: `${bbThreadId}:${interaction.id}`,
+        isPosted: () => isInteractionPosted(bbThreadId, interaction.id),
+        post: () =>
+          postToThreadChannel(
+            bbThreadId,
+            `❓ **BB needs you:** ${prompt}`,
+          ),
+        markPosted: () => markInteractionPosted(bbThreadId, interaction.id),
+      });
+    }
+    return pending.length;
+  };
+
+  const activeThreadWatcher = new ActiveThreadWatcher({
+    intervalMs: ACTIVE_THREAD_WATCH_INTERVAL_MS,
+    initiallyPaused: true,
+    inspect: async (bbThreadId) => {
+      const map = getMapByBbThread(bbThreadId);
+      if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) {
+        activeThreadWatcher.stop(bbThreadId);
+        return;
+      }
+
+      const pendingCount = await announcePendingInteractions(bbThreadId);
+      if (pendingCount > 0 || !client) return;
+      await client.sendTyping(map.guild_id, map.discord_thread_id);
+    },
+    onError: (bbThreadId, error) => {
+      bb.log.warn(
+        `Discord active-thread watch failed for ${bbThreadId}: ${errorMessage(error)}`,
+      );
+    },
+  });
+
+  const watchActiveThread = (bbThreadId: string): void => {
+    const map = getMapByBbThread(bbThreadId);
+    if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) return;
+    activeThreadWatcher.start(bbThreadId);
+    void activeThreadWatcher.tick();
+  };
+
   /**
    * Personal project only. "First available project" used to be the fallback,
    * which meant an arbitrary repository could be driven from Discord.
@@ -788,6 +849,7 @@ export default async function plugin(bb: BbPluginApi) {
         created_at: now,
         last_activity_at: now,
       });
+      watchActiveThread(thread.id);
       await sendToDiscord(
         message.guildId,
         session.id,
@@ -835,7 +897,12 @@ export default async function plugin(bb: BbPluginApi) {
   // Thread lifecycle
   // ---------------------------------------------------------------------
 
+  bb.events.on("thread.active", ({ thread }) => {
+    watchActiveThread(thread.id);
+  });
+
   bb.events.on("thread.idle", async ({ thread, lastAssistantText }) => {
+    activeThreadWatcher.stop(thread.id);
     const map = getMapByBbThread(thread.id);
     if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) return;
     touchMap(thread.id);
@@ -853,26 +920,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
 
     try {
-      const interactions = await bb.sdk.threads.interactions.list({
-        threadId: thread.id,
-      });
-      for (const interaction of interactions) {
-        if (
-          interaction.status !== "pending" ||
-          isInteractionPosted(thread.id, interaction.id)
-        ) {
-          continue;
-        }
-        const prompt = pendingInteractionPrompt(
-          interaction as PendingInteractionLike,
-          MAX_INTERACTION_PROMPT_CHARS,
-        );
-        const posted = await postToThreadChannel(
-          thread.id,
-          `❓ **BB needs you:** ${prompt}`,
-        );
-        if (posted) markInteractionPosted(thread.id, interaction.id);
-      }
+      await announcePendingInteractions(thread.id);
     } catch (error) {
       bb.log.warn(
         `Could not list interactions for ${thread.id}: ${errorMessage(error)}`,
@@ -881,6 +929,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.events.on("thread.failed", async ({ thread, error }) => {
+    activeThreadWatcher.stop(thread.id);
     const map = getMapByBbThread(thread.id);
     if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) return;
     const reason = error?.trim() || "The BB thread failed.";
@@ -888,6 +937,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.events.on("thread.deleted", async ({ thread }) => {
+    activeThreadWatcher.stop(thread.id);
     const map = getMapByBbThread(thread.id);
     if (!map) return;
     if (
@@ -1114,6 +1164,14 @@ export default async function plugin(bb: BbPluginApi) {
           announcePairing();
         }
       },
+      onConnectionStateChange: (ready) => {
+        if (ready) {
+          activeThreadWatcher.resume();
+          void activeThreadWatcher.tick();
+        } else {
+          activeThreadWatcher.pause();
+        }
+      },
       onSuspectedMissingContentIntent: () => {
         const message =
           "Discord messages are arriving without text. Enable Message Content Intent in the Discord Developer Portal → your application → Bot, then reconnect.";
@@ -1130,16 +1188,13 @@ export default async function plugin(bb: BbPluginApi) {
     client = created;
     try {
       await created.login();
-    } catch (error) {
-      client = null;
+      await waitForWake(signal);
+    } finally {
+      activeThreadWatcher.pause();
+      if (client === created) client = null;
+      botTag = null;
       await created.destroy().catch(() => {});
-      throw error;
     }
-
-    await waitForWake(signal);
-    client = null;
-    botTag = null;
-    await created.destroy().catch(() => {});
   };
 
   bb.background.service("discord-gateway", {
@@ -1194,6 +1249,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.onDispose(async () => {
     wakeAll();
+    activeThreadWatcher.dispose();
     if (client) {
       await client.destroy().catch(() => {});
       client = null;

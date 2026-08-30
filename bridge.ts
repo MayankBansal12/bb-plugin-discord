@@ -66,11 +66,132 @@ export type InteractionResolution =
   | { kind: "respond"; value: string }
   | { kind: "error"; message: string };
 
+export interface ActiveThreadWatcherOptions {
+  intervalMs: number;
+  inspect: (threadId: string) => Promise<void>;
+  onError: (threadId: string, error: unknown) => void;
+  initiallyPaused?: boolean;
+  scheduler?: {
+    setInterval: (callback: () => void, intervalMs: number) => unknown;
+    clearInterval: (handle: unknown) => void;
+  };
+}
+
 const APPROVAL_REPLY_BY_DECISION = {
   allow_once: "`approve`",
   allow_for_session: "`approve session`",
   deny: "`deny`",
 } as const satisfies Record<ApprovalPayload["availableDecisions"][number], string>;
+
+/**
+ * One bounded timer for every mapped BB thread that is currently working.
+ * A tick never overlaps the previous one, even when Discord or BB is slow.
+ */
+export class ActiveThreadWatcher {
+  private readonly targets = new Set<string>();
+  private readonly opts: ActiveThreadWatcherOptions;
+  private readonly scheduler: NonNullable<ActiveThreadWatcherOptions["scheduler"]>;
+  private timer: unknown = null;
+  private paused: boolean;
+  private inspecting = false;
+
+  constructor(opts: ActiveThreadWatcherOptions) {
+    this.opts = opts;
+    this.paused = opts.initiallyPaused ?? false;
+    this.scheduler = opts.scheduler ?? {
+      setInterval: (callback, intervalMs) => setInterval(callback, intervalMs),
+      clearInterval: (handle) =>
+        clearInterval(handle as ReturnType<typeof setInterval>),
+    };
+  }
+
+  start(threadId: string): void {
+    this.targets.add(threadId);
+    this.reconcileTimer();
+  }
+
+  stop(threadId: string): void {
+    this.targets.delete(threadId);
+    this.reconcileTimer();
+  }
+
+  pause(): void {
+    this.paused = true;
+    this.reconcileTimer();
+  }
+
+  resume(): void {
+    this.paused = false;
+    this.reconcileTimer();
+  }
+
+  dispose(): void {
+    this.paused = true;
+    this.targets.clear();
+    this.reconcileTimer();
+  }
+
+  async tick(): Promise<void> {
+    if (this.paused || this.inspecting || this.targets.size === 0) return;
+    this.inspecting = true;
+    try {
+      for (const threadId of [...this.targets]) {
+        if (!this.targets.has(threadId)) continue;
+        try {
+          await this.opts.inspect(threadId);
+        } catch (error) {
+          this.opts.onError(threadId, error);
+        }
+      }
+    } finally {
+      this.inspecting = false;
+    }
+  }
+
+  get targetCount(): number {
+    return this.targets.size;
+  }
+
+  get isScheduled(): boolean {
+    return this.timer !== null;
+  }
+
+  private reconcileTimer(): void {
+    const shouldRun = !this.paused && this.targets.size > 0;
+    if (shouldRun && this.timer === null) {
+      this.timer = this.scheduler.setInterval(
+        () => void this.tick(),
+        this.opts.intervalMs,
+      );
+    } else if (!shouldRun && this.timer !== null) {
+      this.scheduler.clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+}
+
+/** Serializes the DB-backed check/post/mark sequence for one interaction. */
+export class InteractionAnnouncementGuard {
+  private readonly inFlight = new Set<string>();
+
+  async postOnce(options: {
+    key: string;
+    isPosted: () => boolean;
+    post: () => Promise<boolean>;
+    markPosted: () => void;
+  }): Promise<boolean> {
+    if (options.isPosted() || this.inFlight.has(options.key)) return false;
+    this.inFlight.add(options.key);
+    try {
+      if (options.isPosted()) return false;
+      const posted = await options.post();
+      if (posted) options.markPosted();
+      return posted;
+    } finally {
+      this.inFlight.delete(options.key);
+    }
+  }
+}
 
 export function parseDiscordIds(value: string | undefined): string[] {
   if (!value) return [];
