@@ -127,11 +127,11 @@ export type PairingFailureReason = "no-code" | "expired" | "mismatch";
 export function pairingFailureMessage(reason: PairingFailureReason): string {
   switch (reason) {
     case "no-code":
-      return "No pairing code is active. Run `bb discord pair` in BB to get one.";
+      return "No pairing code is active. Open BB → Settings → Plugins → Discord to create one.";
     case "expired":
-      return "That pairing code expired. Run `bb discord pair` in BB for a fresh one.";
+      return "That pairing code expired. Create a new one in BB → Settings → Plugins → Discord.";
     default:
-      return "That pairing code does not match. Run `bb discord pair` in BB to see the current code.";
+      return "That code does not match. Copy the current command from BB → Settings → Plugins → Discord.";
   }
 }
 
@@ -342,7 +342,7 @@ export function classifyDiscordError(error: unknown): ClassifiedDiscordError {
     return {
       kind: "missing-permissions",
       message:
-        "The bot lacks permission for that action in this server. Re-invite it with `bb discord invite` or grant the permission to its role.",
+        "The bot lacks permission for that action. Open BB → Settings → Plugins → Discord and use the invite link again, or update the bot role in Discord.",
       needsConfiguration: needsConfigurationFor("missing-permissions"),
     };
   }

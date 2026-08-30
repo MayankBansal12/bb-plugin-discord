@@ -4,9 +4,8 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": [
-      "ES2022"
-    ],
+    "lib": ["ES2022", "DOM"],
+    "jsx": "react-jsx",
     "types": [
       "node"
     ],
@@ -23,6 +22,12 @@
   },
   "include": [
     "server.ts",
+    "contract.ts",
+    "app.tsx",
+    "pairing-ui.ts",
+    "pairing-ui.test.ts",
+    "pairing-status.ts",
+    "pairing-status.test.ts",
     "discord.ts",
     "discord.test.ts",
     "bridge.ts",
