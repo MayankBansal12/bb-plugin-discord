@@ -41,6 +41,7 @@ export interface DiscordClientOptions {
   botUserId: () => string | undefined;
   onMessage: (message: DiscordInboundMessage) => void | Promise<void>;
   onReady: (botTag: string) => void | Promise<void>;
+  onConnectionStateChange?: (ready: boolean) => void;
   /** Fired at most once when message content arrives empty (intent is off). */
   onSuspectedMissingContentIntent: () => void;
   log: {
@@ -166,6 +167,7 @@ export class DiscordClient {
 
     this.client.once(Events.ClientReady, (client) => {
       this.ready = true;
+      opts.onConnectionStateChange?.(true);
       opts.log.info(`Discord gateway connected as ${client.user.tag}`);
       void Promise.resolve(opts.onReady(client.user.tag)).catch((error) => {
         opts.log.warn(`Discord ready handler failed: ${errorMessage(error)}`);
@@ -184,10 +186,12 @@ export class DiscordClient {
 
     this.client.on(Events.ShardDisconnect, (event) => {
       this.ready = false;
+      opts.onConnectionStateChange?.(false);
       opts.log.warn(`Discord shard disconnected (${event.code}); will resume`);
     });
     this.client.on(Events.ShardResume, () => {
       this.ready = true;
+      opts.onConnectionStateChange?.(true);
       opts.log.info("Discord shard resumed");
     });
   }
@@ -228,6 +232,18 @@ export class DiscordClient {
         channelId,
         chunk,
       );
+    }
+  }
+
+  async sendTyping(guildId: string, channelId: string): Promise<void> {
+    const channel = await this.fetchGuildChannel(guildId, channelId);
+    if (!channel.isTextBased() || !("sendTyping" in channel)) {
+      throw new Error(`Channel ${channelId} does not support typing indicators.`);
+    }
+    try {
+      await (channel as TextChannel | ThreadChannel).sendTyping();
+    } catch (error) {
+      throw toFriendlyError(error);
     }
   }
 

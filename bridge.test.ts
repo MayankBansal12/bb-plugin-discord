@@ -1,13 +1,137 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ActiveThreadWatcher,
   describePendingInteraction,
   discordSessionName,
   isAllowedSpawnLocation,
   parseDiscordIds,
+  pendingInteractionPrompt,
+  pendingInteractionReplyInstructions,
+  InteractionAnnouncementGuard,
   routeDiscordMessage,
   resolveInteractionReply,
+  shouldAlertHomeForFailure,
 } from "./bridge.js";
+
+test("the active-thread watcher runs one timer only while it has targets", () => {
+  const timers = new Set<unknown>();
+  let nextTimer = 0;
+  const watcher = new ActiveThreadWatcher({
+    intervalMs: 5000,
+    inspect: async () => {},
+    onError: () => {},
+    scheduler: {
+      setInterval: () => {
+        const timer = ++nextTimer;
+        timers.add(timer);
+        return timer;
+      },
+      clearInterval: (timer) => timers.delete(timer),
+    },
+  });
+
+  watcher.start("thread-1");
+  watcher.start("thread-2");
+  assert.equal(watcher.targetCount, 2);
+  assert.equal(watcher.isScheduled, true);
+  assert.equal(timers.size, 1);
+
+  watcher.stop("thread-1");
+  assert.equal(timers.size, 1);
+  watcher.stop("thread-2");
+  assert.equal(watcher.isScheduled, false);
+  assert.equal(timers.size, 0);
+});
+
+test("the active-thread watcher pauses for gateway teardown and disposes cleanly", () => {
+  const timers = new Set<unknown>();
+  const watcher = new ActiveThreadWatcher({
+    intervalMs: 5000,
+    inspect: async () => {},
+    onError: () => {},
+    scheduler: {
+      setInterval: () => {
+        const timer = {};
+        timers.add(timer);
+        return timer;
+      },
+      clearInterval: (timer) => timers.delete(timer),
+    },
+  });
+
+  watcher.start("thread-1");
+  watcher.pause();
+  assert.equal(timers.size, 0);
+  assert.equal(watcher.targetCount, 1);
+  watcher.resume();
+  assert.equal(timers.size, 1);
+  watcher.dispose();
+  assert.equal(timers.size, 0);
+  assert.equal(watcher.targetCount, 0);
+});
+
+test("watcher ticks do not overlap or fan out beyond active targets", async () => {
+  let release: (() => void) | undefined;
+  const inspected: string[] = [];
+  const watcher = new ActiveThreadWatcher({
+    intervalMs: 5000,
+    inspect: async (threadId) => {
+      inspected.push(threadId);
+      if (threadId === "thread-1") {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+    },
+    onError: () => {},
+  });
+  watcher.start("thread-1");
+  watcher.start("thread-2");
+
+  const first = watcher.tick();
+  await Promise.resolve();
+  await watcher.tick();
+  assert.deepEqual(inspected, ["thread-1"]);
+  release?.();
+  await first;
+  assert.deepEqual(inspected, ["thread-1", "thread-2"]);
+  watcher.dispose();
+});
+
+test("the same interaction announcement is never posted twice", async () => {
+  const guard = new InteractionAnnouncementGuard();
+  const posted = new Set<string>();
+  let sends = 0;
+  let release: (() => void) | undefined;
+  const attempt = () =>
+    guard.postOnce({
+      key: "thread-1:interaction-1",
+      isPosted: () => posted.has("interaction-1"),
+      post: async () => {
+        sends += 1;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return true;
+      },
+      markPosted: () => posted.add("interaction-1"),
+    });
+
+  const first = attempt();
+  await Promise.resolve();
+  assert.equal(await attempt(), false);
+  release?.();
+  assert.equal(await first, true);
+  assert.equal(await attempt(), false);
+  assert.equal(sends, 1);
+});
+
+test("failure alerts do not duplicate a session message in the home channel", () => {
+  assert.equal(shouldAlertHomeForFailure("session", "home"), true);
+  assert.equal(shouldAlertHomeForFailure("same-channel", "same-channel"), false);
+  assert.equal(shouldAlertHomeForFailure("session", null), false);
+});
 
 test("parseDiscordIds accepts Discord snowflakes and deduplicates them", () => {
   assert.deepEqual(
@@ -145,6 +269,53 @@ test("approval replies produce a supported BB resolution", () => {
     kind: "resolve",
     resolution: { decision: "deny" },
   });
+});
+
+test("approval copy offers only decisions supported by the interaction", () => {
+  const interaction = {
+    id: "i-copy",
+    status: "pending",
+    payload: {
+      kind: "approval" as const,
+      availableDecisions: ["allow_once", "deny"] as Array<
+        "allow_once" | "allow_for_session" | "deny"
+      >,
+      reason: "Read the bb CLI skill",
+      subject: { tool: "Read /home/ai/.bb/runtime/global-skills/bb-cli/SKILL.md" },
+    },
+  };
+
+  const instructions = pendingInteractionReplyInstructions(interaction);
+  const announcement = pendingInteractionPrompt(interaction);
+  const error = resolveInteractionReply(interaction, "approve session");
+
+  assert.equal(instructions, "Reply `approve` or `deny`.");
+  assert.match(announcement, /Read the bb CLI skill/);
+  assert.match(announcement, /Read \/home\/ai\/\.bb\/runtime/);
+  assert.match(announcement, /Reply `approve` or `deny`\./);
+  assert.doesNotMatch(announcement, /session/i);
+  assert.deepEqual(error, { kind: "error", message: announcement });
+});
+
+test("approval copy includes the session option only when available", () => {
+  const interaction = {
+    id: "i-session",
+    status: "pending",
+    payload: {
+      kind: "approval" as const,
+      availableDecisions: [
+        "allow_once",
+        "allow_for_session",
+        "deny",
+      ] as Array<"allow_once" | "allow_for_session" | "deny">,
+      reason: "Run the command",
+    },
+  };
+
+  assert.equal(
+    pendingInteractionReplyInstructions(interaction),
+    "Reply `approve`, `approve session`, or `deny`.",
+  );
 });
 
 test("single free-text question becomes a user_answer resolution", () => {

@@ -66,6 +66,133 @@ export type InteractionResolution =
   | { kind: "respond"; value: string }
   | { kind: "error"; message: string };
 
+export interface ActiveThreadWatcherOptions {
+  intervalMs: number;
+  inspect: (threadId: string) => Promise<void>;
+  onError: (threadId: string, error: unknown) => void;
+  initiallyPaused?: boolean;
+  scheduler?: {
+    setInterval: (callback: () => void, intervalMs: number) => unknown;
+    clearInterval: (handle: unknown) => void;
+  };
+}
+
+const APPROVAL_REPLY_BY_DECISION = {
+  allow_once: "`approve`",
+  allow_for_session: "`approve session`",
+  deny: "`deny`",
+} as const satisfies Record<ApprovalPayload["availableDecisions"][number], string>;
+
+/**
+ * One bounded timer for every mapped BB thread that is currently working.
+ * A tick never overlaps the previous one, even when Discord or BB is slow.
+ */
+export class ActiveThreadWatcher {
+  private readonly targets = new Set<string>();
+  private readonly opts: ActiveThreadWatcherOptions;
+  private readonly scheduler: NonNullable<ActiveThreadWatcherOptions["scheduler"]>;
+  private timer: unknown = null;
+  private paused: boolean;
+  private inspecting = false;
+
+  constructor(opts: ActiveThreadWatcherOptions) {
+    this.opts = opts;
+    this.paused = opts.initiallyPaused ?? false;
+    this.scheduler = opts.scheduler ?? {
+      setInterval: (callback, intervalMs) => setInterval(callback, intervalMs),
+      clearInterval: (handle) =>
+        clearInterval(handle as ReturnType<typeof setInterval>),
+    };
+  }
+
+  start(threadId: string): void {
+    this.targets.add(threadId);
+    this.reconcileTimer();
+  }
+
+  stop(threadId: string): void {
+    this.targets.delete(threadId);
+    this.reconcileTimer();
+  }
+
+  pause(): void {
+    this.paused = true;
+    this.reconcileTimer();
+  }
+
+  resume(): void {
+    this.paused = false;
+    this.reconcileTimer();
+  }
+
+  dispose(): void {
+    this.paused = true;
+    this.targets.clear();
+    this.reconcileTimer();
+  }
+
+  async tick(): Promise<void> {
+    if (this.paused || this.inspecting || this.targets.size === 0) return;
+    this.inspecting = true;
+    try {
+      for (const threadId of [...this.targets]) {
+        if (!this.targets.has(threadId)) continue;
+        try {
+          await this.opts.inspect(threadId);
+        } catch (error) {
+          this.opts.onError(threadId, error);
+        }
+      }
+    } finally {
+      this.inspecting = false;
+    }
+  }
+
+  get targetCount(): number {
+    return this.targets.size;
+  }
+
+  get isScheduled(): boolean {
+    return this.timer !== null;
+  }
+
+  private reconcileTimer(): void {
+    const shouldRun = !this.paused && this.targets.size > 0;
+    if (shouldRun && this.timer === null) {
+      this.timer = this.scheduler.setInterval(
+        () => void this.tick(),
+        this.opts.intervalMs,
+      );
+    } else if (!shouldRun && this.timer !== null) {
+      this.scheduler.clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+}
+
+/** Serializes the DB-backed check/post/mark sequence for one interaction. */
+export class InteractionAnnouncementGuard {
+  private readonly inFlight = new Set<string>();
+
+  async postOnce(options: {
+    key: string;
+    isPosted: () => boolean;
+    post: () => Promise<boolean>;
+    markPosted: () => void;
+  }): Promise<boolean> {
+    if (options.isPosted() || this.inFlight.has(options.key)) return false;
+    this.inFlight.add(options.key);
+    try {
+      if (options.isPosted()) return false;
+      const posted = await options.post();
+      if (posted) options.markPosted();
+      return posted;
+    } finally {
+      this.inFlight.delete(options.key);
+    }
+  }
+}
+
 export function parseDiscordIds(value: string | undefined): string[] {
   if (!value) return [];
   return Array.from(
@@ -84,6 +211,13 @@ export function isAllowedSpawnLocation(
 ): boolean {
   if (location.parentChannelId !== null) return false;
   return !spawnChannelId || location.channelId === spawnChannelId;
+}
+
+export function shouldAlertHomeForFailure(
+  sessionChannelId: string,
+  homeChannelId: string | null,
+): boolean {
+  return homeChannelId !== null && homeChannelId !== sessionChannelId;
 }
 
 /**
@@ -125,7 +259,7 @@ export function resolveInteractionReply(
   if (payload.kind === "approval" && "availableDecisions" in payload) {
     if (["approve", "allow", "yes", "approve once"].includes(normalized)) {
       if (!payload.availableDecisions.includes("allow_once")) {
-        return { kind: "error", message: "This approval cannot be allowed once." };
+        return { kind: "error", message: pendingInteractionPrompt(interaction) };
       }
       return {
         kind: "resolve",
@@ -134,10 +268,7 @@ export function resolveInteractionReply(
     }
     if (["approve session", "allow session", "always"].includes(normalized)) {
       if (!payload.availableDecisions.includes("allow_for_session")) {
-        return {
-          kind: "error",
-          message: "This approval cannot be allowed for the session.",
-        };
+        return { kind: "error", message: pendingInteractionPrompt(interaction) };
       }
       return {
         kind: "resolve",
@@ -146,13 +277,13 @@ export function resolveInteractionReply(
     }
     if (["deny", "no", "reject"].includes(normalized)) {
       if (!payload.availableDecisions.includes("deny")) {
-        return { kind: "error", message: "This approval cannot be denied." };
+        return { kind: "error", message: pendingInteractionPrompt(interaction) };
       }
       return { kind: "resolve", resolution: { decision: "deny" } };
     }
     return {
       kind: "error",
-      message: "Reply `approve`, `approve session`, or `deny` for this request.",
+      message: pendingInteractionPrompt(interaction),
     };
   }
 
@@ -234,6 +365,33 @@ export function describePendingInteraction(
     `BB is waiting on ${payload.kind}.`;
 }
 
+/** The one source of truth for choices advertised in Discord. */
+export function pendingInteractionReplyInstructions(
+  interaction: PendingInteractionLike,
+): string {
+  const payload = interaction.payload;
+  if (payload.kind !== "approval" || !("availableDecisions" in payload)) {
+    return "Reply here to answer.";
+  }
+
+  const offered = payload.availableDecisions.map(
+    (decision) => APPROVAL_REPLY_BY_DECISION[decision],
+  );
+  if (offered.length === 0) {
+    return "Open BB to answer this approval request.";
+  }
+  return `Reply ${joinChoices(offered)}.`;
+}
+
+/** Subject plus instructions, shared by announcements and reply errors. */
+export function pendingInteractionPrompt(
+  interaction: PendingInteractionLike,
+  maxSubjectChars?: number,
+): string {
+  const subject = describePendingInteraction(interaction);
+  return `${maxSubjectChars ? truncate(subject, maxSubjectChars) : subject}\n_${pendingInteractionReplyInstructions(interaction)}_`;
+}
+
 function parseQuestionAnswers(text: string, count: number): string[] | null {
   if (count === 1) return text ? [text] : null;
   const answers = new Array<string | undefined>(count);
@@ -251,4 +409,10 @@ function parseQuestionAnswers(text: string, count: number): string[] | null {
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function joinChoices(choices: string[]): string {
+  if (choices.length === 1) return choices[0]!;
+  if (choices.length === 2) return `${choices[0]} or ${choices[1]}`;
+  return `${choices.slice(0, -1).join(", ")}, or ${choices.at(-1)}`;
 }
