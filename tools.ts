@@ -72,12 +72,12 @@ function ready(deps: DiscordToolDeps, requireFull: boolean): Ready | ToolResult 
   const guildId = deps.getGuildId();
   if (!client || !client.isReady()) {
     return toolError(
-      "The Discord bridge is not connected. Check `bb discord status` in BB.",
+      "Discord is not connected. Check the connection panel in BB → Settings → Plugins → Discord.",
     );
   }
   if (!guildId) {
     return toolError(
-      "Discord is not paired with a server yet. Run `bb discord pair` in BB and follow the instructions.",
+      "Discord is not paired yet. Complete pairing in BB → Settings → Plugins → Discord.",
     );
   }
   if (requireFull && deps.getAccessLevel() !== "full") {
@@ -106,7 +106,7 @@ function json(value: unknown): string {
 
 export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): void {
   const auditReason = (threadId: string): string =>
-    `Requested through BB thread ${threadId} (Discord plugin)`;
+    "Requested through BB's Discord plugin";
 
   bb.agents.registerTool({
     name: "discord_server_info",

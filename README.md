@@ -4,30 +4,42 @@ Control BB agent threads from Discord. Mention the bot in a channel to open a de
 
 ## Setup
 
-Two steps: paste a token, send one message.
+Pair the bot from BB's UI—no terminal or Discord IDs required.
 
-### 1. Create and invite the bot
+### 1. Create the bot
 
 1. In the [Discord Developer Portal](https://discord.com/developers/applications), create an application and bot.
 2. On the Bot page, copy/reset the token and enable **Message Content Intent**. **Server Members Intent** is optional — enable it on the application only if you want member listing. The bridge uses Discord's REST member-list endpoint and does not request member events in its gateway connection.
-3. Paste the token into BB → Settings → Plugins → Discord.
-4. Run `bb discord invite` and open the URL it prints. It is generated from the token, so there is no trip through the OAuth2 URL Generator. Add `--full` for the server-administration permission set.
+3. Open BB → Settings → Plugins → Discord and paste the token.
 
-The default `messages` invite includes **Create Public Threads** and **Send Messages in Threads**, which the session model requires. If the bot was invited before those permissions were added to its role, re-run `bb discord invite` and authorize the updated invite.
+### 2. Pair from BB
 
-### 2. Pair a server
+The **Discord connection** panel shows the gateway state and bot name, then walks you through the rest:
+
+1. Select **Open Discord invite** and add the bot to your server.
+2. Copy the pairing command shown in BB.
+3. Send that command in the Discord channel you want to use.
+
+The code is single-use and expires after ten minutes. The panel updates as soon as Discord accepts it, showing the paired server, home channel, and authorized user. It also provides a confirmation-backed unpair action.
+
+The default `messages` invite includes **Create Public Threads** and **Send Messages in Threads**, which the session model requires. If the bot was invited before those permissions were added to its role, open the invite link again after saving the desired access level.
+
+### Terminal alternative
+
+The existing CLI flow remains available:
 
 ```sh
 bb discord pair
+bb discord invite
 ```
 
-That prints a single-use code that expires in ten minutes. Send it in the Discord channel you want to authorize:
+Send the printed command in Discord:
 
 ```text
 @bb pair ABC-123
 ```
 
-The bot replies with what it captured — server, authorized user, home channel — and starts working. No Developer Mode, no copying snowflake IDs.
+The bot confirms the server, authorized user, and home channel. No Developer Mode or copied snowflake IDs are needed.
 
 The code is generated in BB and consumed in Discord, so a server cannot claim your bot by talking to it first. While unpaired, the bot ignores every message that is not a mention carrying a valid code.
 
@@ -37,7 +49,7 @@ bb discord allow <id> # authorize another Discord user
 bb discord unpair     # forget the server and every allowed user
 ```
 
-`bb discord status` also prints the current pairing instructions while no server is authorized. If you previously configured the advanced guild and user ID settings, `unpair` clears plugin-owned users and thread mappings but cannot edit those read-only settings; it names both settings you must clear to finish revoking access.
+`bb discord status` also prints the current pairing instructions while no server is authorized. If you previously configured the advanced guild and user ID settings, the UI and CLI unpair actions clear plugin-owned users and conversation mappings but cannot edit those settings; both surfaces tell you which fields to clear to finish revoking access.
 
 ## Security boundary
 
@@ -140,12 +152,12 @@ Configuration mistakes surface as sentences, not stack traces:
 - **Bad token** — "Discord rejected the bot token…" and the bridge stops retrying until you change it.
 - **Message Content Intent off** — Discord refuses the connection with `4014`; the plugin names the exact toggle to flip. If content still arrives empty, it warns once in the home channel.
 - **Server Members Intent off** — only the REST-backed `discord_list_members` call fails, and it says to enable the privileged intent for the application on the Developer Portal's Bot page. The gateway deliberately does not identify with `GuildMembers`; every other tool keeps working.
-- **Missing bot permissions** — reported as a permission problem with a pointer to `bb discord invite`, and sends are not retried into a rate limit.
+- **Missing bot permissions** — reported as a permission problem with a pointer to the invite link in the connection panel, and sends are not retried into a rate limit.
 - **Network drops** — exponential backoff from 2s to a 60s ceiling; discord.js resumes the session itself.
 
 Saving a new token reconnects the gateway on its own — no `bb plugin reload discord`.
 
-BB's `needs-configuration` badge is used only for a missing bot token — a standing gap that the SDK's clear-on-next-load behaviour suits. Pairing guidance deliberately does not use it, because the SDK cannot clear that state once pairing succeeds, which would leave a false warning. Pairing and connection guidance appears in `bb discord pair`, `bb discord status`, and the plugin log instead.
+BB's `needs-configuration` badge is used only for a missing bot token. Pairing and connection state stays live in the Discord connection panel through realtime invalidations and RPC refreshes, with a slow safety refresh after missed signals.
 
 ## Development and verification
 
