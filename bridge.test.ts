@@ -5,6 +5,8 @@ import {
   discordSessionName,
   isAllowedSpawnLocation,
   parseDiscordIds,
+  pendingInteractionPrompt,
+  pendingInteractionReplyInstructions,
   routeDiscordMessage,
   resolveInteractionReply,
 } from "./bridge.js";
@@ -145,6 +147,53 @@ test("approval replies produce a supported BB resolution", () => {
     kind: "resolve",
     resolution: { decision: "deny" },
   });
+});
+
+test("approval copy offers only decisions supported by the interaction", () => {
+  const interaction = {
+    id: "i-copy",
+    status: "pending",
+    payload: {
+      kind: "approval" as const,
+      availableDecisions: ["allow_once", "deny"] as Array<
+        "allow_once" | "allow_for_session" | "deny"
+      >,
+      reason: "Read the bb CLI skill",
+      subject: { tool: "Read /home/ai/.bb/runtime/global-skills/bb-cli/SKILL.md" },
+    },
+  };
+
+  const instructions = pendingInteractionReplyInstructions(interaction);
+  const announcement = pendingInteractionPrompt(interaction);
+  const error = resolveInteractionReply(interaction, "approve session");
+
+  assert.equal(instructions, "Reply `approve` or `deny`.");
+  assert.match(announcement, /Read the bb CLI skill/);
+  assert.match(announcement, /Read \/home\/ai\/\.bb\/runtime/);
+  assert.match(announcement, /Reply `approve` or `deny`\./);
+  assert.doesNotMatch(announcement, /session/i);
+  assert.deepEqual(error, { kind: "error", message: announcement });
+});
+
+test("approval copy includes the session option only when available", () => {
+  const interaction = {
+    id: "i-session",
+    status: "pending",
+    payload: {
+      kind: "approval" as const,
+      availableDecisions: [
+        "allow_once",
+        "allow_for_session",
+        "deny",
+      ] as Array<"allow_once" | "allow_for_session" | "deny">,
+      reason: "Run the command",
+    },
+  };
+
+  assert.equal(
+    pendingInteractionReplyInstructions(interaction),
+    "Reply `approve`, `approve session`, or `deny`.",
+  );
 });
 
 test("single free-text question becomes a user_answer resolution", () => {

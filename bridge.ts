@@ -66,6 +66,12 @@ export type InteractionResolution =
   | { kind: "respond"; value: string }
   | { kind: "error"; message: string };
 
+const APPROVAL_REPLY_BY_DECISION = {
+  allow_once: "`approve`",
+  allow_for_session: "`approve session`",
+  deny: "`deny`",
+} as const satisfies Record<ApprovalPayload["availableDecisions"][number], string>;
+
 export function parseDiscordIds(value: string | undefined): string[] {
   if (!value) return [];
   return Array.from(
@@ -125,7 +131,7 @@ export function resolveInteractionReply(
   if (payload.kind === "approval" && "availableDecisions" in payload) {
     if (["approve", "allow", "yes", "approve once"].includes(normalized)) {
       if (!payload.availableDecisions.includes("allow_once")) {
-        return { kind: "error", message: "This approval cannot be allowed once." };
+        return { kind: "error", message: pendingInteractionPrompt(interaction) };
       }
       return {
         kind: "resolve",
@@ -134,10 +140,7 @@ export function resolveInteractionReply(
     }
     if (["approve session", "allow session", "always"].includes(normalized)) {
       if (!payload.availableDecisions.includes("allow_for_session")) {
-        return {
-          kind: "error",
-          message: "This approval cannot be allowed for the session.",
-        };
+        return { kind: "error", message: pendingInteractionPrompt(interaction) };
       }
       return {
         kind: "resolve",
@@ -146,13 +149,13 @@ export function resolveInteractionReply(
     }
     if (["deny", "no", "reject"].includes(normalized)) {
       if (!payload.availableDecisions.includes("deny")) {
-        return { kind: "error", message: "This approval cannot be denied." };
+        return { kind: "error", message: pendingInteractionPrompt(interaction) };
       }
       return { kind: "resolve", resolution: { decision: "deny" } };
     }
     return {
       kind: "error",
-      message: "Reply `approve`, `approve session`, or `deny` for this request.",
+      message: pendingInteractionPrompt(interaction),
     };
   }
 
@@ -234,6 +237,33 @@ export function describePendingInteraction(
     `BB is waiting on ${payload.kind}.`;
 }
 
+/** The one source of truth for choices advertised in Discord. */
+export function pendingInteractionReplyInstructions(
+  interaction: PendingInteractionLike,
+): string {
+  const payload = interaction.payload;
+  if (payload.kind !== "approval" || !("availableDecisions" in payload)) {
+    return "Reply here to answer.";
+  }
+
+  const offered = payload.availableDecisions.map(
+    (decision) => APPROVAL_REPLY_BY_DECISION[decision],
+  );
+  if (offered.length === 0) {
+    return "Open BB to answer this approval request.";
+  }
+  return `Reply ${joinChoices(offered)}.`;
+}
+
+/** Subject plus instructions, shared by announcements and reply errors. */
+export function pendingInteractionPrompt(
+  interaction: PendingInteractionLike,
+  maxSubjectChars?: number,
+): string {
+  const subject = describePendingInteraction(interaction);
+  return `${maxSubjectChars ? truncate(subject, maxSubjectChars) : subject}\n_${pendingInteractionReplyInstructions(interaction)}_`;
+}
+
 function parseQuestionAnswers(text: string, count: number): string[] | null {
   if (count === 1) return text ? [text] : null;
   const answers = new Array<string | undefined>(count);
@@ -251,4 +281,10 @@ function parseQuestionAnswers(text: string, count: number): string[] | null {
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function joinChoices(choices: string[]): string {
+  if (choices.length === 1) return choices[0]!;
+  if (choices.length === 2) return `${choices[0]} or ${choices[1]}`;
+  return `${choices.slice(0, -1).join(", ")}, or ${choices.at(-1)}`;
 }

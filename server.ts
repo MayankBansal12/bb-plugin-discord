@@ -2,10 +2,10 @@
 
 import type { BbPluginApi } from "@bb/plugin-sdk";
 import {
-  describePendingInteraction,
   discordSessionName,
   isAllowedSpawnLocation,
   parseDiscordIds,
+  pendingInteractionPrompt,
   routeDiscordMessage,
   resolveInteractionReply,
   type PendingInteractionLike,
@@ -863,16 +863,13 @@ export default async function plugin(bb: BbPluginApi) {
         ) {
           continue;
         }
-        const summary = describePendingInteraction(
+        const prompt = pendingInteractionPrompt(
           interaction as PendingInteractionLike,
+          MAX_INTERACTION_PROMPT_CHARS,
         );
-        const instructions =
-          interaction.payload.kind === "approval"
-            ? "Reply `approve`, `approve session`, or `deny`."
-            : "Reply here to answer.";
         const posted = await postToThreadChannel(
           thread.id,
-          `❓ **BB needs you:** ${truncate(summary, MAX_INTERACTION_PROMPT_CHARS)}\n_${instructions}_`,
+          `❓ **BB needs you:** ${prompt}`,
         );
         if (posted) markInteractionPosted(thread.id, interaction.id);
       }
