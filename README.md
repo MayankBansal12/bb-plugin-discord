@@ -94,7 +94,7 @@ The bot creates a Discord thread named from that request and links a new BB thre
 
 The parent channel remains ordinary Discord space. Unmentioned messages there are ignored completely — they are not forwarded and receive no reaction. Mention the bot again in the parent channel whenever you want a separate session.
 
-Upgrades preserve older channel-bound mappings. Their parent-channel chatter becomes mention-only immediately; the next explicit mention moves the existing BB conversation into a newly named Discord session thread. Until that handoff, lifecycle output is held back rather than posted into the parent channel.
+Upgrades preserve older channel-bound mappings. Their channel chatter becomes mention-only immediately; lifecycle output continues in that original channel until the next explicit mention moves the existing BB conversation into a newly named Discord thread.
 
 When BB asks one question, reply normally. For several questions, reply with numbered lines:
 

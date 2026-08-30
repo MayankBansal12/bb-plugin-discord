@@ -47,7 +47,11 @@ export function pairingPanelView(
           : "Paired channel"
       : "—",
     userLabel: pairing
-      ? pairing.userTag ?? (pairing.source === "legacy-settings" ? "Set by advanced settings" : "Pairing owner")
+      ? pairing.userId
+        ? `${pairing.userTag ?? "Discord user"} (${pairing.userId})`
+        : pairing.source === "legacy-settings"
+          ? "Set by advanced settings"
+          : "Pairing owner"
       : "—",
     expiryLabel:
       secondsRemaining === null

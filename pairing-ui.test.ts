@@ -52,7 +52,7 @@ test("the panel shows the bot identity and complete stored pairing", () => {
   assert.equal(view.connectionDetail, "Signed in as BB Bot");
   assert.equal(view.serverLabel, "Builders");
   assert.equal(view.channelLabel, "#agents");
-  assert.equal(view.userLabel, "mayank");
+  assert.equal(view.userLabel, "mayank (user-1)");
 });
 
 test("legacy authorization is explained without inventing channel or user data", () => {
