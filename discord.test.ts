@@ -127,3 +127,48 @@ test("member listing uses the REST list endpoint, not gateway member fetch", asy
     },
   ]);
 });
+
+test("member-list intent failures reach tools as classified friendly copy", async () => {
+  const client = makeClient();
+  (client as unknown as { getGuild: () => Promise<unknown> }).getGuild =
+    async () => ({
+      members: {
+        list: async () => {
+          throw Object.assign(new Error("Missing access"), { code: 50001 });
+        },
+      },
+    });
+
+  await assert.rejects(
+    () => client.listMembers("guild-1", 50),
+    /Listing members needs Server Members Intent/,
+  );
+});
+
+test("an archived linked thread is reopened before sending", async () => {
+  const client = makeClient();
+  let archiveValue: boolean | undefined;
+  let typed = false;
+  const thread = {
+    guildId: "guild-1",
+    archived: true,
+    isDMBased: () => false,
+    isThread: () => true,
+    isTextBased: () => true,
+    setArchived: async (value: boolean) => {
+      archiveValue = value;
+    },
+    sendTyping: async () => {
+      typed = true;
+    },
+  };
+  const internal = client as unknown as {
+    client: { channels: { fetch: () => Promise<unknown> } };
+  };
+  internal.client.channels.fetch = async () => thread;
+
+  await client.sendTyping("guild-1", "thread-1");
+
+  assert.equal(archiveValue, false);
+  assert.equal(typed, true);
+});

@@ -69,7 +69,10 @@ export type InteractionResolution =
 export interface ActiveThreadWatcherOptions {
   intervalMs: number;
   inspect: (threadId: string) => Promise<void>;
-  onError: (threadId: string, error: unknown) => void;
+  onError: (
+    threadId: string,
+    error: unknown,
+  ) => "stop" | void | Promise<"stop" | void>;
   initiallyPaused?: boolean;
   scheduler?: {
     setInterval: (callback: () => void, intervalMs: number) => unknown;
@@ -140,7 +143,9 @@ export class ActiveThreadWatcher {
         try {
           await this.opts.inspect(threadId);
         } catch (error) {
-          this.opts.onError(threadId, error);
+          if ((await this.opts.onError(threadId, error)) === "stop") {
+            this.stop(threadId);
+          }
         }
       }
     } finally {
@@ -193,6 +198,26 @@ export class InteractionAnnouncementGuard {
   }
 }
 
+/** Stop work and move the notification after a Discord session is unusable. */
+export async function detachUnavailableSession(operations: {
+  stopBbThread: () => Promise<void>;
+  onStopError: (error: unknown) => void;
+  unlink: () => void;
+  notifyParent: (() => Promise<boolean>) | null;
+  notifyHome: () => Promise<void>;
+}): Promise<void> {
+  try {
+    await operations.stopBbThread();
+  } catch (error) {
+    operations.onStopError(error);
+  }
+  operations.unlink();
+  const parentPosted = operations.notifyParent
+    ? await operations.notifyParent()
+    : false;
+  if (!parentPosted) await operations.notifyHome();
+}
+
 export function parseDiscordIds(value: string | undefined): string[] {
   if (!value) return [];
   return Array.from(
@@ -205,11 +230,21 @@ export function parseDiscordIds(value: string | undefined): string[] {
   );
 }
 
+export function normalizeOptionalDiscordSnowflake(
+  value: string | undefined,
+): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  if (!/^\d{15,22}$/.test(trimmed)) {
+    throw new Error("Expected a Discord channel ID with 15–22 digits.");
+  }
+  return trimmed;
+}
+
 export function isAllowedSpawnLocation(
-  location: DiscordMessageLocation,
+  location: Pick<DiscordMessageLocation, "channelId">,
   spawnChannelId: string | undefined,
 ): boolean {
-  if (location.parentChannelId !== null) return false;
   return !spawnChannelId || location.channelId === spawnChannelId;
 }
 

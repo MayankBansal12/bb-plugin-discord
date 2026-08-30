@@ -3,9 +3,11 @@
 import type { BbPluginApi } from "@bb/plugin-sdk";
 import {
   ActiveThreadWatcher,
+  detachUnavailableSession,
   discordSessionName,
   InteractionAnnouncementGuard,
   isAllowedSpawnLocation,
+  normalizeOptionalDiscordSnowflake,
   parseDiscordIds,
   prepareDiscordSession,
   pendingInteractionPrompt,
@@ -15,7 +17,11 @@ import {
   shouldAlertHomeForFailure,
   type PendingInteractionLike,
 } from "./bridge.js";
-import { DiscordClient, type DiscordInboundMessage } from "./discord.js";
+import {
+  DiscordClient,
+  isUnavailableDiscordChannelError,
+  type DiscordInboundMessage,
+} from "./discord.js";
 import {
   classifyDiscordError,
   clearStoredPairingState,
@@ -525,6 +531,21 @@ export default async function plugin(bb: BbPluginApi) {
     ).run(bbThreadId, interactionId, Date.now());
   };
 
+  const removeThreadState = (bbThreadId: string): void => {
+    const remove = db.transaction(() => {
+      db.prepare("DELETE FROM discord_threads WHERE bb_thread_id = ?").run(
+        bbThreadId,
+      );
+      db.prepare("DELETE FROM discord_posted_replies WHERE bb_thread_id = ?").run(
+        bbThreadId,
+      );
+      db.prepare(
+        "DELETE FROM discord_posted_interactions WHERE bb_thread_id = ?",
+      ).run(bbThreadId);
+    });
+    remove();
+  };
+
   const sendToDiscord = async (
     guildId: string,
     channelId: string,
@@ -568,6 +589,25 @@ export default async function plugin(bb: BbPluginApi) {
 
   const announcementGuard = new InteractionAnnouncementGuard();
 
+  const postInteractionToThreadChannel = async (
+    bbThreadId: string,
+    text: string,
+  ): Promise<boolean> => {
+    const map = getMapByBbThread(bbThreadId);
+    if (
+      !map ||
+      !client ||
+      !isActiveMappedGuild(map.guild_id, effectiveGuildId())
+    ) {
+      return false;
+    }
+    // Unlike ordinary lifecycle output, let this failure reach the watcher.
+    // A transient failure is retried on its next tick; a missing session is
+    // detached by the watcher's permanent-channel error policy.
+    await client.sendMessage(map.guild_id, map.discord_thread_id, text);
+    return true;
+  };
+
   const announcePendingInteractions = async (
     bbThreadId: string,
   ): Promise<number> => {
@@ -586,7 +626,7 @@ export default async function plugin(bb: BbPluginApi) {
         key: `${bbThreadId}:${interaction.id}`,
         isPosted: () => isInteractionPosted(bbThreadId, interaction.id),
         post: () =>
-          postToThreadChannel(
+          postInteractionToThreadChannel(
             bbThreadId,
             `❓ **BB needs you:** ${prompt}`,
           ),
@@ -610,7 +650,48 @@ export default async function plugin(bb: BbPluginApi) {
       if (pendingCount > 0 || !client) return;
       await client.sendTyping(map.guild_id, map.discord_thread_id);
     },
-    onError: (bbThreadId, error) => {
+    onError: async (bbThreadId, error) => {
+      if (isUnavailableDiscordChannelError(error)) {
+        const map = getMapByBbThread(bbThreadId);
+        if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) {
+          return "stop";
+        }
+
+        bb.log.warn(
+          `Discord session ${map.discord_thread_id} disappeared; stopping and unlinking BB thread ${bbThreadId}.`,
+        );
+        const notice =
+          "⚠️ **I stopped the linked BB conversation.** Its Discord thread is unavailable. Mention me here to start a new conversation.";
+        const parentChannelId = map.discord_parent_channel_id;
+        const fallbackChannelId = homeChannelId();
+        await detachUnavailableSession({
+          stopBbThread: async () => {
+            await bb.sdk.threads.stop({ threadId: bbThreadId });
+          },
+          onStopError: (stopError) => {
+            bb.log.warn(
+              `Could not stop detached BB thread ${bbThreadId}: ${errorMessage(stopError)}`,
+            );
+          },
+          unlink: () => removeThreadState(bbThreadId),
+          notifyParent: parentChannelId
+            ? () => sendToDiscord(map.guild_id, parentChannelId, notice)
+            : null,
+          notifyHome: async () => {
+            if (
+              fallbackChannelId &&
+              fallbackChannelId !== parentChannelId
+            ) {
+              await sendToDiscord(
+                map.guild_id,
+                fallbackChannelId,
+                `⚠️ **I stopped a linked BB conversation.** Discord thread <#${map.discord_thread_id}> is unavailable. Mention me in a channel to start a new conversation.`,
+              );
+            }
+          },
+        });
+        return "stop";
+      }
       bb.log.warn(
         `Discord active-thread watch failed for ${bbThreadId}: ${errorMessage(error)}`,
       );
@@ -750,7 +831,7 @@ export default async function plugin(bb: BbPluginApi) {
       await sendToDiscord(
         message.guildId,
         message.channelId,
-        "⚠️ BB has multiple pending interactions. Open the BB thread to answer them unambiguously.",
+        "⚠️ I found multiple pending BB requests. Open the BB thread and answer each one there.",
       );
       return true;
     }
@@ -822,7 +903,7 @@ export default async function plugin(bb: BbPluginApi) {
     const summary = [
       "✅ **This server is paired with BB.**",
       `• Server: ${message.guildName ?? "This server"}`,
-      `• Authorized user: ${message.authorTag}`,
+      `• Authorized user: ${message.authorTag} (${message.authorId})`,
       `• Home channel: ${message.channelName ? `#${message.channelName}` : "This channel"}`,
       "",
       "Next: mention me in a channel with a request. I’ll open a dedicated conversation thread there.",
@@ -861,7 +942,7 @@ export default async function plugin(bb: BbPluginApi) {
       await sendToDiscord(
         message.guildId,
         message.channelId,
-        `⚠️ Prompt is too long (max ${MAX_PROMPT_CHARS} characters).`,
+        `⚠️ I couldn’t send that prompt because it’s over ${MAX_PROMPT_CHARS.toLocaleString("en-US")} characters. Shorten it and try again.`,
       );
       return;
     }
@@ -885,16 +966,28 @@ export default async function plugin(bb: BbPluginApi) {
     }
 
     const values = await settings.get();
+    let spawnChannelId: string | null;
+    try {
+      spawnChannelId = normalizeOptionalDiscordSnowflake(values.spawnChannelId);
+    } catch {
+      bb.log.warn(
+        "Discord spawnChannelId is not a valid Discord channel snowflake.",
+      );
+      await sendToDiscord(
+        message.guildId,
+        message.channelId,
+        "⚠️ I couldn’t start that conversation because the restricted channel setting isn’t a valid Discord channel ID. Update it in BB → Settings → Plugins → Discord, then try again.",
+      );
+      return;
+    }
     if (
       routeCreatesSession(route) &&
-      !isAllowedSpawnLocation(message, values.spawnChannelId)
+      !isAllowedSpawnLocation(message, spawnChannelId ?? undefined)
     ) {
       await sendToDiscord(
         message.guildId,
         message.channelId,
-        values.spawnChannelId
-          ? `Start new BB conversations in <#${values.spawnChannelId}>. Mention me there with your request.`
-          : "Start this conversation from an allowed parent channel, then continue in the thread I create.",
+        `Start new BB conversations in <#${spawnChannelId}>. Mention me there with your request.`,
       );
       return;
     }
@@ -911,7 +1004,7 @@ export default async function plugin(bb: BbPluginApi) {
         await sendToDiscord(
           message.guildId,
           session.id,
-          "↪️ Continuing the existing BB conversation in this session. Messages here no longer need a mention.",
+          "✅ **I moved the existing BB conversation to this thread.** Continue here — no mention needed.",
         );
         await client?.react(
           message.guildId,
@@ -986,7 +1079,7 @@ export default async function plugin(bb: BbPluginApi) {
       await sendToDiscord(
         message.guildId,
         session.id,
-        "✅ **BB is working on it.** Keep chatting in this thread—no mention needed.",
+        "✅ **BB is working on it.** Keep chatting in this thread — no mention needed.",
       );
       await client?.react(
         message.guildId,
@@ -1055,11 +1148,19 @@ export default async function plugin(bb: BbPluginApi) {
       }
     }
 
+    // Belt and braces. The watcher is the primary announcement path because a
+    // thread blocked on an approval stays `active`, and it is stopped on the
+    // first line of this handler. But nothing guarantees every interaction
+    // kind keeps the thread active — a question BB asks at the end of a turn
+    // could land here instead. Announcing is idempotent (DB-backed
+    // `isInteractionPosted` plus the in-flight guard), so the only thing this
+    // costs is one list call, and the thing it prevents is an interaction that
+    // is never surfaced at all.
     try {
       await announcePendingInteractions(thread.id);
     } catch (error) {
       bb.log.warn(
-        `Could not list interactions for ${thread.id}: ${errorMessage(error)}`,
+        `Could not announce pending interactions for ${thread.id}: ${classifyDiscordError(error).message}`,
       );
     }
   });
@@ -1097,26 +1198,16 @@ export default async function plugin(bb: BbPluginApi) {
     activeThreadWatcher.stop(thread.id);
     const map = getMapByBbThread(thread.id);
     if (!map) return;
-    if (
-      map.discord_parent_channel_id !== null &&
-      isActiveMappedGuild(map.guild_id, effectiveGuildId())
-    ) {
+    if (isActiveMappedGuild(map.guild_id, effectiveGuildId())) {
       await sendToDiscord(
         map.guild_id,
         map.discord_thread_id,
-        "🗑️ The linked BB thread was deleted. Mention me in the parent channel to start a new conversation.",
+        map.discord_parent_channel_id
+          ? `🗑️ The linked BB thread was deleted. Mention me in <#${map.discord_parent_channel_id}> to start a new conversation.`
+          : "🗑️ The linked BB thread was deleted. Mention me in this channel to start a new conversation.",
       );
     }
-    const removeMap = db.transaction(() => {
-      db.prepare("DELETE FROM discord_threads WHERE bb_thread_id = ?").run(thread.id);
-      db.prepare("DELETE FROM discord_posted_replies WHERE bb_thread_id = ?").run(
-        thread.id,
-      );
-      db.prepare(
-        "DELETE FROM discord_posted_interactions WHERE bb_thread_id = ?",
-      ).run(thread.id);
-    });
-    removeMap();
+    removeThreadState(thread.id);
   });
 
   // ---------------------------------------------------------------------
@@ -1165,22 +1256,25 @@ export default async function plugin(bb: BbPluginApi) {
         const pairing = getPairing();
         const legacyGuild = legacyGuildId();
         const activeGuild = effectiveGuildId();
-        const rows = db
-          .prepare(
-            "SELECT * FROM discord_threads ORDER BY last_activity_at DESC LIMIT 10",
-          )
-          .all() as ThreadMapRow[];
-        const lines = rows
-          .filter((row) => row.guild_id === activeGuild)
-          .map(
-          (row) => row.title ?? "Untitled Discord conversation",
-          );
+        const rows = activeGuild
+          ? (db
+              .prepare(
+                "SELECT * FROM discord_threads WHERE guild_id = ? ORDER BY last_activity_at DESC LIMIT 10",
+              )
+              .all(activeGuild) as ThreadMapRow[])
+          : [];
+        const lines = rows.map((row) => {
+          const kind = row.discord_parent_channel_id
+            ? "Session thread"
+            : "Legacy channel";
+          return `${kind}: ${row.title ?? "Untitled Discord conversation"} (<#${row.discord_thread_id}>)`;
+        });
         return {
           exitCode: 0,
           stdout: [
             `Discord gateway: ${client?.isReady() ? `connected as ${botTag ?? "?"}` : "not connected"}`,
             pairing
-              ? `Paired: ${pairing.guild_name ?? pairing.guild_id} · #${pairing.channel_name ?? pairing.channel_id} · ${pairing.user_tag ?? pairing.user_id}`
+              ? `Paired: ${pairing.guild_name ?? pairing.guild_id} · #${pairing.channel_name ?? pairing.channel_id} · ${pairing.user_tag ?? "Discord user"} (${pairing.user_id})`
               : legacyGuild
                 ? `Paired: legacy advanced settings authorize guild ${legacyGuild}`
               : cached.botToken
@@ -1317,7 +1411,7 @@ export default async function plugin(bb: BbPluginApi) {
         botTag = tag;
         setGatewayState("connected", null, "gateway-connected");
         if (isPaired()) {
-          await postToHome(`🟢 Discord BB bridge is online as ${tag}.`);
+          await postToHome(`✅ **Discord is connected.** I’m online as ${tag}.`);
         } else {
           announcePairing();
         }
@@ -1337,7 +1431,7 @@ export default async function plugin(bb: BbPluginApi) {
       },
       onSuspectedMissingContentIntent: () => {
         const message =
-          "Discord messages are arriving without text. Enable Message Content Intent in the Discord Developer Portal → your application → Bot, then reconnect.";
+          "I couldn’t read Discord message text. Enable Message Content Intent in the Discord Developer Portal → your application → Bot, then restart BB.";
         bb.log.warn(message);
         void postToHome(`⚠️ ${message}`);
       },
