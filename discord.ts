@@ -270,7 +270,13 @@ export class DiscordClient {
 
   async destroy(): Promise<void> {
     this.ready = false;
-    this.client.destroy();
+    try {
+      await this.client.destroy();
+    } catch (error) {
+      this.opts.log.warn(
+        `Discord client teardown failed: ${classifyDiscordError(error).message}`,
+      );
+    }
   }
 
   // -------------------------------------------------------------------------

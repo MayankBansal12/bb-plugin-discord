@@ -3,12 +3,20 @@ import test from "node:test";
 import {
   availableToolNames,
   DESTRUCTIVE_TOOL_NAMES,
+  discordAuditReason,
   MANAGEMENT_TOOL_NAMES,
   MESSAGE_TOOL_NAMES,
 } from "./tools.js";
 
 test("no Discord tools are offered before pairing", () => {
   assert.deepEqual(availableToolNames("full", true, false), []);
+});
+
+test("Discord audit reasons identify the originating BB thread", () => {
+  assert.equal(
+    discordAuditReason("thread-123"),
+    "Requested through BB's Discord plugin by thread thread-123",
+  );
 });
 
 test("message access covers messages and threads only", () => {
