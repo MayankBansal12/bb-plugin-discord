@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   describePendingInteraction,
+  discordSessionName,
   isAllowedSpawnLocation,
   parseDiscordIds,
+  routeDiscordMessage,
   resolveInteractionReply,
 } from "./bridge.js";
 
@@ -14,21 +16,112 @@ test("parseDiscordIds accepts Discord snowflakes and deduplicates them", () => {
   );
 });
 
-test("spawn restriction accepts the channel or its parent", () => {
+test("spawn restriction accepts only the configured parent channel", () => {
   assert.equal(
     isAllowedSpawnLocation(
-      { channelId: "thread", parentChannelId: "parent" },
+      { channelId: "parent", parentChannelId: null },
       "parent",
     ),
     true,
   );
   assert.equal(
     isAllowedSpawnLocation(
-      { channelId: "thread", parentChannelId: "other" },
+      { channelId: "thread", parentChannelId: "parent" },
       "parent",
     ),
     false,
   );
+  assert.equal(
+    isAllowedSpawnLocation(
+      { channelId: "other", parentChannelId: null },
+      "parent",
+    ),
+    false,
+  );
+});
+
+test("an unmentioned parent-channel message is ignored", () => {
+  assert.deepEqual(
+    routeDiscordMessage(
+      { channelId: "parent", parentChannelId: null, mentioned: false },
+      null,
+    ),
+    { kind: "ignore" },
+  );
+});
+
+test("a parent-channel mention starts a session", () => {
+  assert.deepEqual(
+    routeDiscordMessage(
+      { channelId: "parent", parentChannelId: null, mentioned: true },
+      null,
+    ),
+    { kind: "start-session" },
+  );
+});
+
+test("routine messages inside a mapped session are forwarded", () => {
+  assert.deepEqual(
+    routeDiscordMessage(
+      { channelId: "session", parentChannelId: "parent", mentioned: false },
+      { discordChannelId: "session", discordParentChannelId: "parent" },
+    ),
+    { kind: "forward-session" },
+  );
+});
+
+test("mentions inside a mapped session are forwarded without a new session", () => {
+  assert.deepEqual(
+    routeDiscordMessage(
+      { channelId: "session", parentChannelId: "parent", mentioned: true },
+      { discordChannelId: "session", discordParentChannelId: "parent" },
+    ),
+    { kind: "forward-session" },
+  );
+});
+
+test("even a mention inside an unbound Discord thread is ignored", () => {
+  assert.deepEqual(
+    routeDiscordMessage(
+      { channelId: "other-thread", parentChannelId: "parent", mentioned: true },
+      null,
+    ),
+    { kind: "ignore" },
+  );
+});
+
+test("legacy channel mappings ignore unmentioned parent chatter", () => {
+  assert.deepEqual(
+    routeDiscordMessage(
+      { channelId: "parent", parentChannelId: null, mentioned: false },
+      { discordChannelId: "parent", discordParentChannelId: null },
+    ),
+    { kind: "ignore" },
+  );
+});
+
+test("a mention moves a legacy channel mapping into a session", () => {
+  assert.deepEqual(
+    routeDiscordMessage(
+      { channelId: "parent", parentChannelId: null, mentioned: true },
+      { discordChannelId: "parent", discordParentChannelId: null },
+    ),
+    { kind: "migrate-legacy-session" },
+  );
+});
+
+test("session names are derived from compacted request text", () => {
+  assert.equal(
+    discordSessionName("  inspect the failing\n\n login tests  "),
+    "inspect the failing login tests",
+  );
+  assert.doesNotMatch(discordSessionName("ship the fix"), /th_[a-z0-9]+/i);
+});
+
+test("session names have a useful fallback and Discord's 100-character cap", () => {
+  assert.equal(discordSessionName(" \n "), "BB conversation");
+  assert.equal(discordSessionName("x".repeat(120)).length, 100);
+  assert.match(discordSessionName("x".repeat(120)), /…$/);
 });
 
 test("approval replies produce a supported BB resolution", () => {

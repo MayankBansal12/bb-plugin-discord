@@ -3,6 +3,19 @@ export interface DiscordMessageLocation {
   parentChannelId: string | null;
 }
 
+export interface DiscordRouteMapping {
+  /** Discord channel or thread that currently owns the BB conversation. */
+  discordChannelId: string;
+  /** Null identifies a pre-session row created by older plugin versions. */
+  discordParentChannelId: string | null;
+}
+
+export type DiscordInboundRoute =
+  | { kind: "ignore" }
+  | { kind: "start-session" }
+  | { kind: "forward-session" }
+  | { kind: "migrate-legacy-session" };
+
 export interface ApprovalPayload {
   kind: "approval";
   availableDecisions: Array<"allow_once" | "allow_for_session" | "deny">;
@@ -69,11 +82,36 @@ export function isAllowedSpawnLocation(
   location: DiscordMessageLocation,
   spawnChannelId: string | undefined,
 ): boolean {
-  if (!spawnChannelId) return true;
-  return (
-    location.channelId === spawnChannelId ||
-    location.parentChannelId === spawnChannelId
-  );
+  if (location.parentChannelId !== null) return false;
+  return !spawnChannelId || location.channelId === spawnChannelId;
+}
+
+/**
+ * Decide whether an authorized inbound message belongs to a BB conversation.
+ * Normal channels are mention-only launchers; Discord threads are sessions.
+ */
+export function routeDiscordMessage(
+  message: DiscordMessageLocation & { mentioned: boolean },
+  mapping: DiscordRouteMapping | null,
+): DiscordInboundRoute {
+  if (message.parentChannelId !== null) {
+    return mapping?.discordChannelId === message.channelId
+      ? { kind: "forward-session" }
+      : { kind: "ignore" };
+  }
+
+  if (!message.mentioned) return { kind: "ignore" };
+  if (!mapping) return { kind: "start-session" };
+
+  return mapping.discordParentChannelId === null
+    ? { kind: "migrate-legacy-session" }
+    : { kind: "ignore" };
+}
+
+/** A compact Discord-native title; never leaks BB's internal thread id. */
+export function discordSessionName(request: string): string {
+  const compact = request.replace(/\s+/g, " ").trim();
+  return truncate(compact || "BB conversation", 100);
 }
 
 export function resolveInteractionReply(
@@ -209,4 +247,8 @@ function parseQuestionAnswers(text: string, count: number): string[] | null {
   return complete.every((answer) => answer?.trim())
     ? (complete as string[])
     : null;
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
