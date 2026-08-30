@@ -5,11 +5,13 @@ import {
   describePendingInteraction,
   discordSessionName,
   isAllowedSpawnLocation,
+  prepareDiscordSession,
   parseDiscordIds,
   pendingInteractionPrompt,
   pendingInteractionReplyInstructions,
   InteractionAnnouncementGuard,
   routeDiscordMessage,
+  routeCreatesSession,
   resolveInteractionReply,
   shouldAlertHomeForFailure,
 } from "./bridge.js";
@@ -162,6 +164,48 @@ test("spawn restriction accepts only the configured parent channel", () => {
     ),
     false,
   );
+});
+
+test("both routes that create sessions require the spawn-channel gate", () => {
+  assert.equal(routeCreatesSession({ kind: "start-session" }), true);
+  assert.equal(routeCreatesSession({ kind: "migrate-legacy-session" }), true);
+  assert.equal(routeCreatesSession({ kind: "forward-session" }), false);
+  assert.equal(routeCreatesSession({ kind: "ignore" }), false);
+});
+
+test("a failed BB spawn cannot create an orphan Discord session", async () => {
+  let discordCreates = 0;
+  await assert.rejects(
+    prepareDiscordSession({
+      spawnBbThread: async () => {
+        throw new Error("spawn failed");
+      },
+      createDiscordSession: async () => {
+        discordCreates += 1;
+        return { id: "discord-thread" };
+      },
+      cleanupBbThread: async () => {},
+    }),
+    /spawn failed/,
+  );
+  assert.equal(discordCreates, 0);
+});
+
+test("a Discord-session failure cleans up the already spawned BB thread", async () => {
+  const cleaned: string[] = [];
+  await assert.rejects(
+    prepareDiscordSession({
+      spawnBbThread: async () => ({ id: "bb-thread" }),
+      createDiscordSession: async () => {
+        throw new Error("thread creation failed");
+      },
+      cleanupBbThread: async (thread) => {
+        cleaned.push(thread.id);
+      },
+    }),
+    /thread creation failed/,
+  );
+  assert.deepEqual(cleaned, ["bb-thread"]);
 });
 
 test("an unmentioned parent-channel message is ignored", () => {

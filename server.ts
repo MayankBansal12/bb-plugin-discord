@@ -7,8 +7,10 @@ import {
   InteractionAnnouncementGuard,
   isAllowedSpawnLocation,
   parseDiscordIds,
+  prepareDiscordSession,
   pendingInteractionPrompt,
   routeDiscordMessage,
+  routeCreatesSession,
   resolveInteractionReply,
   shouldAlertHomeForFailure,
   type PendingInteractionLike,
@@ -869,6 +871,9 @@ export default async function plugin(bb: BbPluginApi) {
       try {
         await forwardToBb(existing, message);
       } catch (error) {
+        bb.log.error(
+          `Could not forward Discord session ${message.channelId} to BB: ${classifyDiscordError(error).message}`,
+        );
         retryMessage(message.messageId);
         await sendToDiscord(
           message.guildId,
@@ -881,7 +886,7 @@ export default async function plugin(bb: BbPluginApi) {
 
     const values = await settings.get();
     if (
-      route.kind === "start-session" &&
+      routeCreatesSession(route) &&
       !isAllowedSpawnLocation(message, values.spawnChannelId)
     ) {
       await sendToDiscord(
@@ -915,6 +920,9 @@ export default async function plugin(bb: BbPluginApi) {
           "🚀",
         );
       } catch (error) {
+        bb.log.error(
+          `Could not migrate legacy Discord session ${message.channelId}: ${classifyDiscordError(error).message}`,
+        );
         await sendToDiscord(
           message.guildId,
           message.channelId,
@@ -929,6 +937,9 @@ export default async function plugin(bb: BbPluginApi) {
           channelId: migrated.discord_thread_id,
         });
       } catch (error) {
+        bb.log.error(
+          `Could not forward migrated Discord session ${migrated.discord_thread_id} to BB: ${classifyDiscordError(error).message}`,
+        );
         await sendToDiscord(
           message.guildId,
           migrated.discord_thread_id,
@@ -938,11 +949,27 @@ export default async function plugin(bb: BbPluginApi) {
       return;
     }
 
-    let sessionChannelId: string | null = null;
     try {
-      const session = await createDiscordSession(message);
-      sessionChannelId = session.id;
-      const thread = await spawnBbThread(message.content, message);
+      const { thread, session } = await prepareDiscordSession({
+        spawnBbThread: () => spawnBbThread(message.content, message),
+        createDiscordSession: () => createDiscordSession(message),
+        cleanupBbThread: async (spawned) => {
+          try {
+            await bb.sdk.threads.archive({ threadId: spawned.id });
+          } catch (cleanupError) {
+            bb.log.warn(
+              `Could not archive unlinked BB thread ${spawned.id}: ${classifyDiscordError(cleanupError).message}`,
+            );
+          }
+          try {
+            await bb.sdk.threads.stop({ threadId: spawned.id });
+          } catch (cleanupError) {
+            bb.log.warn(
+              `Could not stop unlinked BB thread ${spawned.id}: ${classifyDiscordError(cleanupError).message}`,
+            );
+          }
+        },
+      });
       const now = Date.now();
       insertMap({
         discord_channel_id: session.id,
@@ -968,9 +995,12 @@ export default async function plugin(bb: BbPluginApi) {
         "🚀",
       );
     } catch (error) {
+      bb.log.error(
+        `Could not start a Discord-backed BB session from ${message.channelId}: ${classifyDiscordError(error).message}`,
+      );
       await sendToDiscord(
         message.guildId,
-        sessionChannelId ?? message.channelId,
+        message.channelId,
         "I couldn’t start this BB conversation. Check the Discord plugin settings in BB, then mention me again.",
       );
     }
@@ -1038,6 +1068,9 @@ export default async function plugin(bb: BbPluginApi) {
     activeThreadWatcher.stop(thread.id);
     const map = getMapByBbThread(thread.id);
     if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) return;
+    bb.log.error(
+      `Discord-linked BB thread ${thread.id} failed: ${classifyDiscordError(error).message}`,
+    );
     const sessionPosted = await postToThreadChannel(
       thread.id,
       "BB couldn’t finish that turn. Try your request again here; if it keeps failing, check BB for details.",
@@ -1386,7 +1419,7 @@ export default async function plugin(bb: BbPluginApi) {
     wakeAll();
     activeThreadWatcher.dispose();
     if (client) {
-      await client.destroy().catch(() => {});
+      await client.destroy();
       client = null;
     }
   });
