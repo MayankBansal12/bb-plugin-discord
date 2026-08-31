@@ -30,7 +30,7 @@
   "scripts": {
     "build": "bb plugin build",
     "check": "npm run typecheck && npm test && bb plugin types --check && bb plugin build",
-    "test": "tsx --test bridge.test.ts config-view.test.ts discord.test.ts execution.test.ts pairing.test.ts pairing-status.test.ts pairing-ui.test.ts security-invariants.test.ts settings.test.ts tools.test.ts",
+    "test": "tsx --test app-ui.test.ts bridge.test.ts config-view.test.ts discord.test.ts execution.test.ts pairing.test.ts pairing-status.test.ts pairing-ui.test.ts security-invariants.test.ts settings.test.ts tools.test.ts",
     "typecheck": "tsc --noEmit"
   }
 }

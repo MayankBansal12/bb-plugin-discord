@@ -93,20 +93,6 @@ export interface DerivedIdDisplay {
   source: ValueSource;
 }
 
-/**
- * The advanced guild field is normally empty because pairing owns the value.
- * Render where the id actually came from instead of an empty input.
- */
-export function derivedGuildId(
-  configuredGuildId: string | undefined,
-  pairedGuildId: string | null,
-): DerivedIdDisplay {
-  const configured = configuredGuildId?.trim();
-  if (pairedGuildId) return { value: pairedGuildId, source: "pairing" };
-  if (configured) return { value: configured, source: "setting" };
-  return { value: null, source: "none" };
-}
-
 export interface AuthorizedUserDisplay {
   id: string;
   tag: string | null;
@@ -114,12 +100,11 @@ export interface AuthorizedUserDisplay {
 }
 
 /**
- * The person who paired is always authorized and is normally absent from the
- * advanced field, so list the union with its provenance.
+ * The person who paired is always authorized and is not in the `bb discord
+ * allow` table, so list the union with its provenance.
  */
 export function authorizedUsers(
-  configuredIds: readonly string[],
-  extraIds: readonly string[],
+  allowedIds: readonly string[],
   pairing: { userId: string | null; userTag: string | null } | null,
 ): AuthorizedUserDisplay[] {
   const byId = new Map<string, AuthorizedUserDisplay>();
@@ -130,10 +115,7 @@ export function authorizedUsers(
       source: "pairing",
     });
   }
-  for (const id of configuredIds) {
-    if (!byId.has(id)) byId.set(id, { id, tag: null, source: "setting" });
-  }
-  for (const id of extraIds) {
+  for (const id of allowedIds) {
     if (!byId.has(id)) byId.set(id, { id, tag: null, source: "setting" });
   }
   return [...byId.values()];

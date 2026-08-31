@@ -58,6 +58,13 @@ const executionSchema = z.object({
   model: executionFieldSchema,
   summary: z.string(),
   issues: z.array(z.string()),
+  projects: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      kind: z.enum(["personal", "standard"]),
+    }).strict(),
+  ),
   /** Enrolled machines, so the panel can name what the settings field takes. */
   machines: z.array(
     z.object({
@@ -91,14 +98,13 @@ const pairingStatusSchema = z.object({
   tokenConfigured: z.boolean(),
   paired: z.boolean(),
   pairing: z.object({
-    source: z.enum(["pairing", "legacy-settings"]),
     guildId: z.string(),
     guildName: z.string().nullable(),
-    channelId: z.string().nullable(),
+    channelId: z.string(),
     channelName: z.string().nullable(),
-    userId: z.string().nullable(),
+    userId: z.string(),
     userTag: z.string().nullable(),
-    pairedAt: z.number().int().nullable(),
+    pairedAt: z.number().int(),
   }).strict().nullable(),
   pairingCode: z.object({
     code: z.string(),
@@ -106,7 +112,6 @@ const pairingStatusSchema = z.object({
     command: z.string().nullable(),
   }).strict().nullable(),
   inviteUrl: z.string().url().nullable(),
-  legacySettingsRequireCleanup: z.boolean(),
   notice: z.string().nullable(),
   configuration: configurationSchema,
   execution: executionSchema,
@@ -126,14 +131,28 @@ export const discordRpcContract = defineRpcContract({
     output: pairingStatusSchema,
   },
   /**
-   * Writes the three execution-selection keys and nothing else, after checking
-   * the requested pair against the live catalog. `null` means Automatic.
+   * Writes the four routing keys and nothing else, after checking the project
+   * and the machine/model pair against live BB state. `null` means Automatic.
    */
   setExecutionSelection: {
     input: z.object({
+      defaultProjectId: z.string().nullable(),
       machineHostId: z.string().nullable(),
       providerId: z.string().nullable(),
       model: z.string().nullable(),
+    }).strict(),
+    output: pairingStatusSchema,
+  },
+  /**
+   * Saves the permission and channel preferences edited in the connected-state
+   * panel. Routing lives in `setExecutionSelection`, which validates it.
+   */
+  setConfiguration: {
+    input: z.object({
+      permissionMode: z.enum(["auto", "accept-edits", "full", "project-default"]),
+      serverAccess: z.enum(["messages", "full"]),
+      homeChannelId: z.string().nullable(),
+      spawnChannelId: z.string().nullable(),
     }).strict(),
     output: pairingStatusSchema,
   },

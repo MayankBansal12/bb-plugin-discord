@@ -13,7 +13,6 @@ const base = {
   botTag: null,
   tokenConfigured: true,
   storedPairing: null,
-  legacyGuildId: null,
   pairingCode: null,
   inviteUrl: "https://discord.com/oauth2/authorize?client_id=1",
   configuration: configurationFixture({
@@ -55,7 +54,7 @@ test("the RPC never invents a plain-text mention before Discord identifies the b
   assert.equal(result.pairingCode?.command, null);
 });
 
-test("stored pairing wins over legacy settings in the RPC status", () => {
+test("stored pairing is represented without inventing metadata", () => {
   const result = buildPairingStatus({
     ...base,
     storedPairing: {
@@ -67,24 +66,8 @@ test("stored pairing wins over legacy settings in the RPC status", () => {
       userTag: "mayank",
       pairedAt: 5_000,
     },
-    legacyGuildId: "legacy-guild",
   });
   assert.equal(result.paired, true);
-  assert.equal(result.pairing?.source, "pairing");
   assert.equal(result.pairing?.guildId, "paired-guild");
-  assert.equal(result.legacySettingsRequireCleanup, true);
-});
-
-test("legacy settings are represented without invented pairing metadata", () => {
-  const result = buildPairingStatus({ ...base, legacyGuildId: "legacy-guild" });
-  assert.deepEqual(result.pairing, {
-    source: "legacy-settings",
-    guildId: "legacy-guild",
-    guildName: null,
-    channelId: null,
-    channelName: null,
-    userId: null,
-    userTag: null,
-    pairedAt: null,
-  });
+  assert.equal(result.pairing?.guildName, "Builders");
 });

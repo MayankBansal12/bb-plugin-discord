@@ -1,10 +1,9 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
+  useId,
   useRef,
   useState,
-  type CSSProperties,
   type ReactNode,
 } from "react";
 import {
@@ -19,13 +18,27 @@ import {
   DISCORD_DEVELOPER_LINKS,
   pairingPanelView,
   pairingSignalReason,
-  setupView,
-  type SetupStep,
 } from "./pairing-ui.js";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 import "./app.css";
 
 const REALTIME_CHANNEL = "pairing-state";
 const SAFETY_REFRESH_MS = 60_000;
+const AUTOMATIC = "";
 
 type Rpc = ReturnType<typeof useRpc<typeof discordRpcContract>>;
 
@@ -39,12 +52,7 @@ interface DiscordStatusState {
   setError: (message: string | null) => void;
 }
 
-/**
- * Both sections read the same server state. Each keeps its own copy rather
- * than lifting a store into module scope, because the host can mount, unmount
- * and remount sections independently.
- */
-function useDiscordStatus(withClock: boolean): DiscordStatusState {
+function useDiscordStatus(): DiscordStatusState {
   const rpc = useRpc<typeof discordRpcContract>();
   const realtimeState = useRealtimeConnectionState();
   const [status, setStatus] = useState<DiscordPairingStatus | null>(null);
@@ -58,7 +66,7 @@ function useDiscordStatus(withClock: boolean): DiscordStatusState {
       setError(null);
       setNow(Date.now());
     } catch {
-      setError("Discord status is unavailable. Try refreshing this section.");
+      setError("Discord status is unavailable. Try again.");
     }
   }, [rpc]);
 
@@ -68,13 +76,10 @@ function useDiscordStatus(withClock: boolean): DiscordStatusState {
     return () => window.clearInterval(safetyRefresh);
   }, [refresh]);
 
-  // Only the pairing countdown needs a per-second clock; the configuration
-  // panel would just be re-rendering itself once a second for nothing.
   useEffect(() => {
-    if (!withClock) return;
     const clock = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(clock);
-  }, [withClock]);
+  }, []);
 
   useRealtime(REALTIME_CHANNEL, (payload) => {
     if (pairingSignalReason(payload)) void refresh();
@@ -89,671 +94,524 @@ function useDiscordStatus(withClock: boolean): DiscordStatusState {
   return { status, error, now, rpc, refresh, setStatus, setError };
 }
 
-function PanelShell({
-  status,
-  error,
-  onRetry,
-  children,
-}: {
-  status: DiscordPairingStatus | null;
-  error: string | null;
-  onRetry: () => void;
-  children: ReactNode;
-}): ReactNode {
-  if (status) return children;
+function Icon({ name, className }: { name: "check" | "copy" | "external"; className?: string }) {
+  const path = {
+    check: <path d="m5 12 4 4L19 6" />,
+    copy: <><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>,
+    external: <><path d="M14 5h5v5" /><path d="m10 14 9-9" /><path d="M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5" /></>,
+  }[name];
   return (
-    <div className="discord-panel discord-panel--loading" aria-live="polite">
-      <span>{error ?? "Loading Discord status…"}</span>
-      {error ? (
-        <button className="discord-button discord-button--secondary" onClick={onRetry}>
-          Try again
-        </button>
-      ) : null}
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      {path}
+    </svg>
+  );
+}
+
+function Notice({ children, destructive = false }: { children: ReactNode; destructive?: boolean }) {
+  return (
+    <div
+      role={destructive ? "alert" : "status"}
+      className={cn(
+        "rounded-md border px-3 py-2 text-sm leading-relaxed",
+        destructive
+          ? "border-destructive/50 bg-destructive/10 text-destructive"
+          : "border-border bg-muted/50 text-muted-foreground",
+      )}
+    >
+      {children}
     </div>
   );
 }
 
-function Notices({
-  status,
-  error,
-}: {
-  status: DiscordPairingStatus;
-  error: string | null;
-}): ReactNode {
+function LoadingState({ error, onRetry }: { error: string | null; onRetry: () => void }) {
   return (
-    <>
-      {status.notice ? <p className="discord-notice">{status.notice}</p> : null}
-      {status.legacySettingsRequireCleanup && !status.notice ? (
-        <p className="discord-notice">
-          This server is authorized by the advanced server and user fields. Clear both to
-          fully unpair it.
-        </p>
-      ) : null}
-      {error ? (
-        <p className="discord-error" role="alert">
-          {error}
-        </p>
-      ) : null}
-    </>
+    <Card aria-live="polite">
+      <CardContent className="flex min-h-24 items-center justify-center gap-3 pt-5 text-sm text-muted-foreground">
+        <span>{error ?? "Loading Discord status…"}</span>
+        {error ? <Button variant="outline" size="sm" onClick={onRetry}>Try again</Button> : null}
+      </CardContent>
+    </Card>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Connection
-// ---------------------------------------------------------------------------
+function StatusCard({ status, now }: { status: DiscordPairingStatus; now: number }) {
+  const view = pairingPanelView(status, now);
+  const state = status.gateway.state;
+  return (
+    <Card>
+      <CardContent className="flex items-center gap-3 pt-5">
+        <span
+          aria-hidden="true"
+          className={cn(
+            "size-2 shrink-0 rounded-full bg-muted-foreground",
+            state === "connected" && "bg-primary",
+            state === "failed" && "bg-destructive",
+            state === "connecting" && "discord-status-pulse",
+          )}
+        />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-foreground">{view.connectionLabel}</p>
+          <p className="truncate text-sm text-muted-foreground">{view.connectionDetail}</p>
+        </div>
+        {status.paired ? <Badge>Connected</Badge> : null}
+      </CardContent>
+    </Card>
+  );
+}
 
-function StepBody({
-  step,
-  status,
-  now,
-  busy,
-  onGenerate,
-  onCopy,
-  copied,
+function SetupStep({
+  number,
+  title,
+  description,
+  complete = false,
+  children,
 }: {
-  step: SetupStep;
-  status: DiscordPairingStatus;
-  now: number;
-  busy: boolean;
-  onGenerate: () => void;
-  onCopy: () => void;
-  copied: boolean;
-}): ReactNode {
+  number: number;
+  title: string;
+  description: string;
+  complete?: boolean;
+  children?: ReactNode;
+}) {
+  return (
+    <li className="flex gap-3 py-4 first:pt-0 last:pb-0">
+      <span className={cn("flex size-6 shrink-0 items-center justify-center rounded-full border border-border bg-background text-xs font-semibold text-muted-foreground", complete && "border-primary bg-primary text-primary-foreground")}>
+        {complete ? <Icon name="check" /> : number}
+      </span>
+      <div className="min-w-0 flex-1 space-y-2">
+        <div>
+          <p className="text-sm font-medium text-foreground">{title}</p>
+          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{description}</p>
+        </div>
+        {children}
+      </div>
+    </li>
+  );
+}
+
+function TokenSetup({ status, now }: { status: DiscordPairingStatus; now: number }) {
+  const view = pairingPanelView(status, now);
+  const failed = status.gateway.state === "failed";
+  // The token is only "verified" once Discord has accepted it, so a saved but
+  // unconfirmed token gets its own honest state rather than a green badge.
+  const verifying = status.tokenConfigured && !failed;
+  return (
+    <div className="discord-enter space-y-4">
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-3">
+            <Badge>Step 1 of 3</Badge>
+            {failed ? <Badge className="bg-destructive/10 text-destructive">Needs attention</Badge> : null}
+          </div>
+          <CardTitle className="pt-2 text-base">
+            {verifying ? "Verifying your bot token" : "Add your Discord bot token"}
+          </CardTitle>
+          <CardDescription>
+            {verifying
+              ? "The token is saved. Waiting for Discord to accept it — the rest of the setup appears as soon as it does."
+              : "Create a Discord app, enable Message Content Intent, then paste the bot token in the secure field above and save it. Nothing else needs configuring yet."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {failed ? <Notice destructive>{view.setupStep}</Notice> : null}
+          <div className="flex flex-wrap gap-2">
+            <UrlLink className="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground hover:bg-accent" href={DISCORD_DEVELOPER_LINKS.applications}>
+              Open Developer Portal <Icon name="external" />
+            </UrlLink>
+            <UrlLink className="inline-flex h-8 items-center gap-2 rounded-md px-3 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground" href={DISCORD_DEVELOPER_LINKS.botDocs}>
+              Bot setup guide
+            </UrlLink>
+            <UrlLink className="inline-flex h-8 items-center gap-2 rounded-md px-3 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground" href={DISCORD_DEVELOPER_LINKS.intentsDocs}>
+              Message Content Intent
+            </UrlLink>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function PairingSetup({ state }: { state: DiscordStatusState }) {
+  const { status, now, rpc } = state;
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  if (!status) return null;
   const view = pairingPanelView(status, now);
 
-  if (step.id === "token") {
-    return (
-      <>
-        <p>{step.detail}</p>
-        <div className="discord-links">
-          <UrlLink className="discord-link" href={DISCORD_DEVELOPER_LINKS.applications}>
-            Developer Portal → Applications
-          </UrlLink>
-          <UrlLink className="discord-link" href={DISCORD_DEVELOPER_LINKS.botDocs}>
-            How to create a bot
-          </UrlLink>
-          <UrlLink className="discord-link" href={DISCORD_DEVELOPER_LINKS.intentsDocs}>
-            Message Content Intent
-          </UrlLink>
-        </div>
-      </>
-    );
-  }
-
-  if (step.id === "invite") {
-    return (
-      <>
-        <p>{step.detail}</p>
-        {status.inviteUrl ? (
-          <UrlLink className="discord-link discord-link--strong" href={status.inviteUrl}>
-            Open the Discord invite
-          </UrlLink>
-        ) : (
-          <p className="discord-hint">{view.setupStep}</p>
-        )}
-      </>
-    );
-  }
-
-  return (
-    <>
-      <p>{step.detail}</p>
-      {status.pairingCode?.command ? (
-        <>
-          <div className="discord-code-row">
-            <code>{status.pairingCode.command}</code>
-            <button
-              className="discord-button discord-button--secondary discord-button--swap"
-              onClick={onCopy}
-              data-copied={copied ? "true" : "false"}
-            >
-              {/* Both labels are always mounted and crossfade in place, so the
-                  button never changes width mid-transition. */}
-              <span className="discord-swap__slot" aria-hidden>
-                <span className="discord-swap__label">Copy</span>
-                <span className="discord-swap__label discord-swap__label--alt">Copied</span>
-              </span>
-              <span className="discord-visually-hidden" aria-live="polite">
-                {copied ? "Command copied" : "Copy command"}
-              </span>
-            </button>
-          </div>
-          {view.expiryLabel ? (
-            <p className="discord-expiry">{view.expiryLabel}</p>
-          ) : null}
-        </>
-      ) : (
-        <p className="discord-hint">
-          {status.pairingCode
-            ? "The copyable command appears once the Discord gateway identifies the bot."
-            : "A pairing code appears once the token is saved."}
-        </p>
-      )}
-      <button
-        className="discord-button discord-button--secondary"
-        disabled={!status.tokenConfigured || busy}
-        onClick={onGenerate}
-      >
-        {busy ? "Creating code…" : "Create a new code"}
-      </button>
-    </>
-  );
-}
-
-function ConnectionPanel(): ReactNode {
-  const state = useDiscordStatus(true);
-  const { status, error, now, rpc, refresh } = state;
-  const [busy, setBusy] = useState<"code" | "unpair" | null>(null);
-  const [confirmingUnpair, setConfirmingUnpair] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  const generateCode = async () => {
-    setBusy("code");
+  const refreshCode = async () => {
+    setBusy(true);
     try {
       state.setStatus(await rpc.call("refreshPairingCode"));
       state.setError(null);
     } catch {
       state.setError("A new pairing code could not be created. Try again.");
     } finally {
-      setBusy(null);
-    }
-  };
-
-  const unpair = async () => {
-    setBusy("unpair");
-    try {
-      state.setStatus(await rpc.call("unpair"));
-      state.setError(null);
-      setConfirmingUnpair(false);
-    } catch {
-      state.setError("Discord could not be unpaired. Try again, or run `bb discord unpair`.");
-    } finally {
-      setBusy(null);
+      setBusy(false);
     }
   };
 
   const copyCommand = async () => {
-    const command = status?.pairingCode?.command;
+    const command = status.pairingCode?.command;
     if (!command) return;
     try {
       await navigator.clipboard.writeText(command);
       setCopied(true);
-      state.setError(null);
       window.setTimeout(() => setCopied(false), 2_000);
     } catch {
       state.setError("The command could not be copied. Select it and copy it manually.");
     }
   };
 
-  const setup = useMemo(() => (status ? setupView(status) : null), [status]);
-
   return (
-    <PanelShell status={status} error={error} onRetry={() => void refresh()}>
-      {status && setup ? (
-        <div className="discord-panel">
-          <section
-            className={`discord-gateway discord-gateway--${status.gateway.state}`}
-            aria-label="Discord gateway"
-          >
-            <span className="discord-dot" aria-hidden />
-            <div>
-              <strong>{pairingPanelView(status, now).connectionLabel}</strong>
-              <p>{pairingPanelView(status, now).connectionDetail}</p>
-            </div>
-            {status.paired ? <span className="discord-badge">Paired</span> : null}
-          </section>
-
-          <Notices status={status} error={error} />
-
-          {setup.stage === "paired" ? (
-            <>
-              <dl className="discord-details">
-                <div>
-                  <dt>Server</dt>
-                  <dd>{pairingPanelView(status, now).serverLabel}</dd>
-                </div>
-                <div>
-                  <dt>Home channel</dt>
-                  <dd>{status.configuration.homeChannel.label}</dd>
-                </div>
-                <div>
-                  <dt>Authorized</dt>
-                  <dd>{pairingPanelView(status, now).userLabel}</dd>
-                </div>
-              </dl>
-              <details className="discord-disclosure discord-disclosure--danger">
-                <summary>Disconnect this server</summary>
-                <p>
-                  Unpairing removes the authorized users and every Discord-to-BB
-                  conversation link. {status.botName} stays in the server until you remove
-                  it there.
-                </p>
-                {confirmingUnpair ? (
-                  <div className="discord-actions">
-                    <button
-                      className="discord-button discord-button--secondary"
-                      onClick={() => setConfirmingUnpair(false)}
-                      disabled={busy !== null}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      className="discord-button discord-button--danger"
-                      onClick={() => void unpair()}
-                      disabled={busy !== null}
-                    >
-                      {busy === "unpair" ? "Unpairing…" : "Yes, unpair"}
-                    </button>
+    <div className="discord-enter space-y-4">
+      <StatusCard status={status} now={now} />
+      {status.notice ? <Notice>{status.notice}</Notice> : null}
+      {state.error ? <Notice destructive>{state.error}</Notice> : null}
+      <Card>
+        <CardHeader>
+          <Badge className="w-fit">Token verified</Badge>
+          <CardTitle className="pt-2 text-base">Connect a Discord server</CardTitle>
+          <CardDescription>Invite the verified bot, then authorize one server from the channel you want BB to use for status updates.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ol className="divide-y divide-border">
+            <SetupStep number={1} title="Bot token" description={`Verified as ${status.gateway.botTag ?? status.botName}`} complete />
+            <SetupStep number={2} title="Invite the bot" description="Add the bot to the Discord server you want to connect.">
+              {status.inviteUrl ? (
+                <UrlLink className="inline-flex h-8 items-center gap-2 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90" href={status.inviteUrl}>
+                  Invite to Discord <Icon name="external" />
+                </UrlLink>
+              ) : <Notice destructive>{view.setupStep}</Notice>}
+            </SetupStep>
+            <SetupStep number={3} title="Pair the server" description={`Send this one-time command in the channel where ${status.botName} should post status and failure alerts.`}>
+              {status.pairingCode?.command ? (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 rounded-md border border-border bg-muted/50 p-2">
+                    <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs text-foreground">{status.pairingCode.command}</code>
+                    <Button variant="outline" size="sm" onClick={() => void copyCommand()}>
+                      <Icon name={copied ? "check" : "copy"} /> {copied ? "Copied" : "Copy"}
+                    </Button>
                   </div>
-                ) : (
-                  <button
-                    className="discord-button discord-button--danger"
-                    onClick={() => setConfirmingUnpair(true)}
-                  >
-                    Unpair server
-                  </button>
-                )}
-              </details>
-            </>
-          ) : (
-            <ol className="discord-steps">
-              {setup.steps.map((step, index) => (
-                <li
-                  key={step.id}
-                  className={`discord-step discord-step--${step.state}`}
-                  style={{ "--discord-step-index": index } as CSSProperties}
-                  aria-current={step.state === "active" ? "step" : undefined}
-                >
-                  <span className="discord-step__marker" aria-hidden>
-                    {step.state === "done" ? "✓" : index + 1}
-                  </span>
-                  <div className="discord-step__body">
-                    <strong>{step.title}</strong>
-                    <p className="discord-step__summary">{step.summary}</p>
-                    {step.state === "active" || step.state === "blocked" ? (
-                      <div className="discord-step__detail">
-                        <StepBody
-                          step={step}
-                          status={status}
-                          now={now}
-                          busy={busy === "code"}
-                          onGenerate={() => void generateCode()}
-                          onCopy={() => void copyCommand()}
-                          copied={copied}
-                        />
-                      </div>
-                    ) : null}
-                  </div>
-                </li>
-              ))}
-            </ol>
-          )}
-        </div>
-      ) : null}
-    </PanelShell>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-
-function Row({
-  label,
-  value,
-  source,
-  hint,
-  problem,
-}: {
-  label: string;
-  value: ReactNode;
-  source?: "setting" | "default" | "pairing" | "none";
-  hint?: string | null;
-  problem?: string | null;
-}): ReactNode {
-  const badge =
-    source === "setting"
-      ? "Configured"
-      : source === "pairing"
-        ? "From pairing"
-        : source === "default"
-          ? "Default"
-          : null;
-  return (
-    <div className="discord-row">
-      <div className="discord-row__head">
-        <span className="discord-row__label">{label}</span>
-        {badge ? <span className="discord-badge">{badge}</span> : null}
-      </div>
-      <span className="discord-row__value">{value}</span>
-      {hint ? <p className="discord-hint">{hint}</p> : null}
-      {problem ? (
-        <p className="discord-error" role="alert">
-          {problem}
-        </p>
-      ) : null}
+                  {view.expiryLabel ? <p className="text-xs tabular-nums text-muted-foreground">{view.expiryLabel}</p> : null}
+                </div>
+              ) : <p className="text-sm text-muted-foreground">The command appears as soon as Discord identifies the bot.</p>}
+              <Button className="mt-2" variant="ghost" size="sm" disabled={busy} onClick={() => void refreshCode()}>
+                {busy ? "Creating code…" : "Create a new code"}
+              </Button>
+            </SetupStep>
+          </ol>
+        </CardContent>
+      </Card>
     </div>
   );
 }
 
-const AUTOMATIC = "";
-
-function ExecutionSelectors({
-  status,
-  onSave,
-  saving,
-}: {
-  status: DiscordPairingStatus;
-  onSave: (next: {
-    machineHostId: string | null;
-    providerId: string | null;
-    model: string | null;
-  }) => void;
-  saving: boolean;
-}): ReactNode {
-  const { execution } = status;
-  const selectedMachine = execution.machine.source === "setting" ? execution.machine.value : null;
-  const selectedModel = execution.model.source === "setting" ? execution.model.value : null;
-
-  // Options are indexed rather than keyed by model id: two providers on one
-  // machine can legitimately offer the same id, and an index cannot collide.
-  const modelIndex = execution.models.findIndex((option) => option.model === selectedModel);
-  const providersInOrder = [
-    ...new Map(
-      execution.models.map((option) => [option.providerId, option.providerDisplayName]),
-    ).entries(),
-  ];
-
+/**
+ * The control is a render prop so the visible label and the input can never
+ * drift apart: `Field` owns the id and hands it to whatever it wraps.
+ */
+function Field({ label, description, children }: { label: string; description?: string; children: (id: string) => ReactNode }) {
+  const id = useId();
   return (
-    <section className="discord-group" aria-labelledby="discord-where" aria-busy={saving}>
-      <h4 id="discord-where">Where Discord requests run</h4>
-      <p className="discord-group__lede">
-        Project, machine and model are one decision. The project picks the checkout, the
-        machine picks the computer, and the model list belongs to that machine — a
-        provider signed in on your laptop is not signed in on a build box.
-      </p>
-
-      <Row
-        label="Project"
-        value={execution.project.label}
-        source={execution.project.source}
-        hint="Set this with the “Project for Discord threads” field above."
-        problem={execution.project.problem}
-      />
-
-      <div className="discord-field">
-        <label className="discord-row__label" htmlFor="discord-machine">
-          Machine
-        </label>
-        <select
-          id="discord-machine"
-          className="discord-select"
-          value={selectedMachine ?? AUTOMATIC}
-          disabled={saving}
-          onChange={(event) =>
-            // Changing machine invalidates the model: its catalog is a
-            // different machine's. Reset rather than guess a replacement.
-            onSave({
-              machineHostId: event.target.value || null,
-              providerId: null,
-              model: null,
-            })
-          }
-        >
-          <option value={AUTOMATIC}>Automatic — project default</option>
-          {execution.machines.map((machine) => (
-            <option key={machine.id} value={machine.id}>
-              {machine.name}
-              {machine.status === "connected" ? "" : " — offline"}
-            </option>
-          ))}
-        </select>
-        <p className="discord-hint">
-          {selectedMachine
-            ? "Changing the machine resets the model to Automatic, because model availability is per machine."
-            : "Discord threads run wherever the project runs by default."}
-        </p>
-        {execution.machine.problem ? (
-          <p className="discord-error" role="alert">
-            {execution.machine.problem}
-          </p>
-        ) : null}
+    <div className="grid gap-2 sm:grid-cols-2 sm:items-start sm:gap-6">
+      <div className="space-y-1">
+        <Label htmlFor={id}>{label}</Label>
+        {description ? <p className="text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
       </div>
-
-      <div className="discord-field">
-        <label className="discord-row__label" htmlFor="discord-model">
-          Model
-        </label>
-        <select
-          id="discord-model"
-          className="discord-select"
-          value={modelIndex >= 0 ? String(modelIndex) : AUTOMATIC}
-          // Automatic must remain available even when the catalog is empty or
-          // unavailable; it is the recovery path for a stale saved model.
-          disabled={saving}
-          onChange={(event) => {
-            const option = execution.models[Number(event.target.value)];
-            onSave({
-              machineHostId: selectedMachine,
-              providerId: option?.providerId ?? null,
-              model: option?.model ?? null,
-            });
-          }}
-        >
-          <option value={AUTOMATIC}>Automatic — project default</option>
-          {providersInOrder.map(([providerId, providerName]) => (
-            <optgroup key={providerId} label={providerName}>
-              {execution.models.map((option, index) =>
-                option.providerId === providerId ? (
-                  <option key={`${providerId}-${option.model}`} value={String(index)}>
-                    {option.displayName}
-                    {option.isDefault ? " — machine default" : ""}
-                  </option>
-                ) : null,
-              )}
-            </optgroup>
-          ))}
-        </select>
-        <p className="discord-hint">
-          {execution.catalogUnavailable
-            ? "The model list for that machine could not be read, so only Automatic is safe right now."
-            : execution.models.length === 0
-              ? "No signed-in provider on that machine reports any models."
-              : selectedModel
-                ? `Pinned. Discord threads use this model instead of the project's.`
-                : "Discord threads use the project's default model."}
-        </p>
-        {selectedModel && modelIndex < 0 && !execution.catalogUnavailable ? (
-          <p className="discord-error" role="alert">
-            The saved model <code>{selectedModel}</code> is not in this machine&rsquo;s
-            list. Pick one below, or set it back to Automatic.
-          </p>
-        ) : null}
-        {execution.model.problem ? (
-          <p className="discord-error" role="alert">
-            {execution.model.problem}
-          </p>
-        ) : null}
-      </div>
-
-      <p className="discord-hint" role="status">
-        {saving ? "Saving…" : execution.summary}
-      </p>
-
-      {execution.issues.length > 0 ? (
-        <ul className="discord-issues" role="alert">
-          {execution.issues.map((issue) => (
-            <li key={issue}>{issue}</li>
-          ))}
-        </ul>
-      ) : null}
-    </section>
+      <div className="min-w-0">{children(id)}</div>
+    </div>
   );
 }
 
-function ConfigurationPanel(): ReactNode {
-  const state = useDiscordStatus(false);
-  const { status, error, rpc, refresh } = state;
-  const [savingDestructive, setSavingDestructive] = useState(false);
-  const [savingExecution, setSavingExecution] = useState(false);
+interface ConfigDraft {
+  permissionMode: "auto" | "accept-edits" | "full" | "project-default";
+  serverAccess: "messages" | "full";
+  homeChannelId: string;
+  spawnChannelId: string;
+}
 
-  const saveExecution = async (next: {
+function draftFrom(status: DiscordPairingStatus): ConfigDraft {
+  const { configuration } = status;
+  return {
+    permissionMode: configuration.permissionMode.value as ConfigDraft["permissionMode"],
+    serverAccess: configuration.serverAccess.value,
+    homeChannelId: configuration.homeChannel.source === "setting" ? configuration.homeChannel.id ?? "" : "",
+    spawnChannelId: configuration.newConversationChannel.source === "setting" ? configuration.newConversationChannel.id ?? "" : "",
+  };
+}
+
+/**
+ * Project, machine and model are one routing decision, validated together by
+ * one RPC, so they save as soon as they are picked. Narrowing the project or
+ * the machine invalidates what sits below it, which is why each reset is
+ * explicit rather than a guess at a replacement.
+ */
+function RoutingFields({ state, saving, setSaving }: { state: DiscordStatusState; saving: boolean; setSaving: (saving: boolean) => void }) {
+  const status = state.status!;
+  const { execution } = status;
+  const pinned = (field: { source: string; value: string | null }): string =>
+    field.source === "setting" ? field.value ?? "" : "";
+  const selectedProject = pinned(execution.project);
+  const selectedMachine = pinned(execution.machine);
+  const selectedModel = pinned(execution.model);
+  // Options are indexed rather than keyed by model id: two providers on one
+  // machine can legitimately offer the same id, and an index cannot collide.
+  const modelIndex = execution.models.findIndex((option) => option.model === selectedModel);
+  const providers = [...new Map(execution.models.map((option) => [option.providerId, option.providerDisplayName])).entries()];
+
+  const save = async (next: {
+    defaultProjectId: string | null;
     machineHostId: string | null;
     providerId: string | null;
     model: string | null;
   }) => {
-    setSavingExecution(true);
+    setSaving(true);
     try {
-      state.setStatus(await rpc.call("setExecutionSelection", next));
+      state.setStatus(await state.rpc.call("setExecutionSelection", next));
       state.setError(null);
     } catch {
       state.setError("That selection could not be saved. Try again.");
     } finally {
-      setSavingExecution(false);
-    }
-  };
-
-  const toggleDestructive = async (enabled: boolean) => {
-    setSavingDestructive(true);
-    try {
-      state.setStatus(await rpc.call("setDestructiveActions", { enabled }));
-      state.setError(null);
-    } catch {
-      state.setError("That change could not be saved. Try again.");
-    } finally {
-      setSavingDestructive(false);
+      setSaving(false);
     }
   };
 
   return (
-    <PanelShell status={status} error={error} onRetry={() => void refresh()}>
-      {status ? (
-        <div className="discord-panel">
-          <Notices status={status} error={error} />
-
-          <ExecutionSelectors
-            status={status}
-            onSave={(next) => void saveExecution(next)}
-            saving={savingExecution}
-          />
-
-          <section className="discord-group" aria-labelledby="discord-access">
-            <h4 id="discord-access">What the agent may do</h4>
-            <Row label="Permission mode" value={status.configuration.permissionMode.label} />
-            <Row label="Discord server access" value={status.configuration.serverAccess.label} />
-            <div className="discord-row">
-              <div className="discord-row__head">
-                <span className="discord-row__label">Destructive server actions</span>
-                <button
-                  role="switch"
-                  aria-checked={status.configuration.destructiveActions.configured}
-                  aria-label="Allow destructive Discord server actions"
-                  className="discord-switch"
-                  disabled={
-                    savingDestructive ||
-                    (status.configuration.serverAccess.value !== "full" &&
-                      !status.configuration.destructiveActions.configured)
-                  }
-                  onClick={() =>
-                    void toggleDestructive(
-                      !status.configuration.destructiveActions.configured,
-                    )
-                  }
-                >
-                  <span className="discord-switch__thumb" aria-hidden />
-                </button>
-              </div>
-              <span className="discord-row__value">
-                {status.configuration.destructiveActions.effective
-                  ? "On — deleting channels and moderating members is allowed"
-                  : "Off — deleting channels and moderating members is refused"}
-              </span>
-              <p className="discord-hint">
-                {status.configuration.serverAccess.value === "full"
-                  ? "This toggle writes only this setting. Discord server access is never changed for you."
-                  : "Set Discord server access to Full above to enable this. Turning it on here will not change server access."}
-              </p>
-              {status.configuration.destructiveActions.blockedReason ? (
-                <p className="discord-error" role="alert">
-                  {status.configuration.destructiveActions.blockedReason}
-                </p>
-              ) : null}
-            </div>
-          </section>
-
-          <section className="discord-group" aria-labelledby="discord-channels">
-            <h4 id="discord-channels">Channels</h4>
-            <Row
-              label="Home channel"
-              value={status.configuration.homeChannel.label}
-              source={status.configuration.homeChannel.source}
-              hint={
-                status.configuration.homeChannel.source === "pairing"
-                  ? "The setting is empty, so status and failure alerts go to the channel the pairing command ran in."
-                  : null
-              }
-            />
-            <Row
-              label="New conversations"
-              value={status.configuration.newConversationChannel.label}
-              source={status.configuration.newConversationChannel.source}
-              hint={`Where mentioning ${status.botName} may open a new BB conversation. Existing conversation threads keep working wherever they are.`}
-            />
-          </section>
-
-          <details className="discord-disclosure">
-            <summary>Derived identifiers</summary>
-            <Row
-              label="Machine ID"
-              value={status.execution.machine.value ?? "Project default"}
-              source={status.execution.machine.source}
-            />
-            <Row
-              label="Server (guild) ID"
-              value={status.configuration.guild.value ?? "Not paired"}
-              source={status.configuration.guild.source}
-            />
-            <Row
-              label="Bot token"
-              value={
-                status.configuration.botToken.configured
-                  ? `Application ${status.configuration.botToken.applicationId ?? "unknown"} · ${status.configuration.botToken.masked}`
-                  : "Not set"
-              }
-              source={status.configuration.botToken.configured ? "setting" : "none"}
-              hint="The token itself never leaves the BB server."
-            />
-            <Row
-              label="Authorized Discord users"
-              value={
-                status.configuration.authorizedUsers.length > 0
-                  ? status.configuration.authorizedUsers
-                      .map((user) => `${user.tag ? `${user.tag} · ` : ""}${user.id}`)
-                      .join(", ")
-                  : "None yet"
-              }
-              hint="The person who paired is always authorized, even when the advanced field is empty."
-            />
-          </details>
-        </div>
-      ) : null}
-    </PanelShell>
+    <>
+      <Field label="Project" description="Picks the checkout the agent gets. Defaults to your personal project.">
+        {(id) => (
+          <Select id={id} value={selectedProject} disabled={saving} onChange={(event) => void save({ defaultProjectId: event.target.value || null, machineHostId: null, providerId: null, model: null })}>
+            <option value={AUTOMATIC}>Automatic — personal project</option>
+            {execution.projects.map((project) => <option key={project.id} value={project.id}>{project.name}{project.kind === "personal" ? " — personal" : ""}</option>)}
+          </Select>
+        )}
+      </Field>
+      <Field label="Machine" description="Use the project’s machine, or pin one enrolled machine.">
+        {(id) => (
+          <Select id={id} value={selectedMachine} disabled={saving} onChange={(event) => void save({ defaultProjectId: selectedProject || null, machineHostId: event.target.value || null, providerId: null, model: null })}>
+            <option value={AUTOMATIC}>Automatic — project default</option>
+            {execution.machines.map((machine) => <option key={machine.id} value={machine.id}>{machine.name}{machine.status === "connected" ? "" : " — offline"}</option>)}
+          </Select>
+        )}
+      </Field>
+      <Field label="Model" description="Models are filtered to what the selected machine can actually run.">
+        {(id) => (
+          <Select
+            id={id}
+            value={modelIndex >= 0 ? String(modelIndex) : AUTOMATIC}
+            disabled={saving}
+            onChange={(event) => {
+              const option = execution.models[Number(event.target.value)];
+              void save({ defaultProjectId: selectedProject || null, machineHostId: selectedMachine || null, providerId: option?.providerId ?? null, model: option?.model ?? null });
+            }}
+          >
+            <option value={AUTOMATIC}>Automatic — project default</option>
+            {providers.map(([providerId, providerName]) => (
+              <optgroup key={providerId} label={providerName}>
+                {execution.models.map((option, index) => option.providerId === providerId ? <option key={`${providerId}-${option.model}`} value={String(index)}>{option.displayName}{option.isDefault ? " — default" : ""}</option> : null)}
+              </optgroup>
+            ))}
+          </Select>
+        )}
+      </Field>
+      {execution.issues.length > 0 ? <Notice destructive>{execution.issues.join(" ")}</Notice> : <p className="text-xs leading-relaxed text-muted-foreground">{saving ? "Saving…" : execution.summary}</p>}
+    </>
   );
 }
 
+function ConnectedPanel({ state }: { state: DiscordStatusState }) {
+  const status = state.status!;
+  const view = pairingPanelView(status, state.now);
+  // Only the fields the operator actually touched are held locally, so an
+  // untouched field keeps tracking the server instead of going stale behind a
+  // refresh, and a field being edited is never overwritten underneath them.
+  const saved = draftFrom(status);
+  const [edits, setEdits] = useState<Partial<ConfigDraft>>({});
+  const draft: ConfigDraft = { ...saved, ...edits };
+  const dirty = (Object.keys(edits) as (keyof ConfigDraft)[]).some((key) => draft[key] !== saved[key]);
+  const edit = <K extends keyof ConfigDraft>(key: K, value: ConfigDraft[K]) =>
+    setEdits((current) => ({ ...current, [key]: value }));
+
+  const [savingConfig, setSavingConfig] = useState(false);
+  const [savingRouting, setSavingRouting] = useState(false);
+  const [savingDestructive, setSavingDestructive] = useState(false);
+  const [unpairing, setUnpairing] = useState(false);
+  const [confirmingUnpair, setConfirmingUnpair] = useState(false);
+  const busy = savingConfig || savingRouting || savingDestructive || unpairing;
+
+  const run = async (
+    setBusy: (value: boolean) => void,
+    call: () => Promise<DiscordPairingStatus>,
+    failure: string,
+    after?: () => void,
+  ) => {
+    setBusy(true);
+    try {
+      state.setStatus(await call());
+      state.setError(null);
+      after?.();
+    } catch {
+      state.setError(failure);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveConfiguration = () =>
+    run(
+      setSavingConfig,
+      () => state.rpc.call("setConfiguration", {
+        permissionMode: draft.permissionMode,
+        serverAccess: draft.serverAccess,
+        homeChannelId: draft.homeChannelId || null,
+        spawnChannelId: draft.spawnChannelId || null,
+      }),
+      "Discord configuration could not be saved. Check the fields and try again.",
+      () => setEdits({}),
+    );
+
+  const toggleDestructive = (enabled: boolean) =>
+    run(
+      setSavingDestructive,
+      () => state.rpc.call("setDestructiveActions", { enabled }),
+      "That permission could not be saved. Try again.",
+    );
+
+  const unpair = () =>
+    run(
+      setUnpairing,
+      () => state.rpc.call("unpair"),
+      "Discord could not be disconnected. Try again.",
+      () => setConfirmingUnpair(false),
+    );
+
+  const gatewayDown = status.gateway.state !== "connected";
+
+  return (
+    <div className="discord-enter space-y-4">
+      {status.notice ? <Notice>{status.notice}</Notice> : null}
+      {state.error ? <Notice destructive>{state.error}</Notice> : null}
+      {gatewayDown ? <Notice destructive>{view.connectionDetail}</Notice> : null}
+      <Card>
+        <CardContent className="grid gap-4 pt-5 sm:grid-cols-2">
+          <div className="flex items-center gap-3 border-b border-border pb-4 sm:col-span-2">
+            <span className={cn("size-2 rounded-full", gatewayDown ? "bg-destructive" : "bg-primary")} aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">Connected to {view.serverLabel}</p>
+              <p className="truncate text-sm text-muted-foreground">{view.connectionDetail}</p>
+            </div>
+            <Badge>Paired</Badge>
+          </div>
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Home channel</p>
+            <p className="mt-1 text-sm">{status.configuration.homeChannel.label}</p>
+          </div>
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Authorized by</p>
+            <p className="mt-1 text-sm">{view.userLabel}</p>
+          </div>
+        </CardContent>
+        <CardFooter className="justify-end border-t border-border pt-4">
+          {confirmingUnpair ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Remove the server connection and conversation links?</span>
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmingUnpair(false)}>Cancel</Button>
+              <Button variant="destructive" size="sm" disabled={busy} onClick={() => void unpair()}>{unpairing ? "Disconnecting…" : "Disconnect"}</Button>
+            </div>
+          ) : <Button variant="ghost" size="sm" className="text-destructive" disabled={busy} onClick={() => setConfirmingUnpair(true)}>Disconnect server</Button>}
+        </CardFooter>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Where requests run</CardTitle>
+          <CardDescription>Project, machine and model are validated together and apply as soon as you pick them.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <RoutingFields state={state} saving={savingRouting} setSaving={setSavingRouting} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Permissions</CardTitle>
+          <CardDescription>Control what Discord-started agents can do in BB and in the paired server.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <Field label="BB permission mode" description="Auto asks before risky actions and is the recommended default.">
+            {(id) => (
+              <Select id={id} value={draft.permissionMode} disabled={busy} onChange={(event) => edit("permissionMode", event.target.value as ConfigDraft["permissionMode"])}>
+                <option value="auto">Auto — ask before risky actions</option>
+                <option value="accept-edits">Accept edits</option>
+                <option value="full">Full</option>
+                <option value="project-default">Project default</option>
+              </Select>
+            )}
+          </Field>
+          <Field label="Discord server access" description="Messages is enough for conversations. Full adds server administration tools and may require inviting the bot again.">
+            {(id) => (
+              <Select id={id} value={draft.serverAccess} disabled={busy} onChange={(event) => edit("serverAccess", event.target.value as ConfigDraft["serverAccess"])}>
+                <option value="messages">Messages only</option>
+                <option value="full">Full server access</option>
+              </Select>
+            )}
+          </Field>
+          <Field label="Destructive server actions" description={status.configuration.serverAccess.value === "full" ? "Allow deleting channels and moderating members. This toggle applies immediately and never changes server access." : "Save Full server access first. Changing this never raises access automatically."}>
+            {(id) => (
+              <div className="flex min-h-9 items-center justify-between rounded-md border border-border px-3">
+                <span className="text-sm text-muted-foreground">{status.configuration.destructiveActions.effective ? "Allowed" : "Not allowed"}</span>
+                <Switch id={id} checked={status.configuration.destructiveActions.configured} disabled={busy || (status.configuration.serverAccess.value !== "full" && !status.configuration.destructiveActions.configured)} onCheckedChange={(checked) => void toggleDestructive(checked)} />
+              </div>
+            )}
+          </Field>
+          {status.configuration.destructiveActions.blockedReason ? <Notice destructive>{status.configuration.destructiveActions.blockedReason}</Notice> : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Channels</CardTitle>
+          <CardDescription>Leave these empty to use the sensible values established during pairing.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <Field label="Status and alerts" description={`Empty uses ${status.configuration.homeChannel.label} from pairing.`}>
+            {(id) => <Input id={id} inputMode="numeric" value={draft.homeChannelId} disabled={busy} placeholder="Channel ID from pairing" onChange={(event) => edit("homeChannelId", event.target.value)} />}
+          </Field>
+          <Field label="New conversations" description="Empty allows mentions in any channel in the paired server.">
+            {(id) => <Input id={id} inputMode="numeric" value={draft.spawnChannelId} disabled={busy} placeholder="Any channel" onChange={(event) => edit("spawnChannelId", event.target.value)} />}
+          </Field>
+        </CardContent>
+      </Card>
+
+      <div className="flex items-center justify-end gap-3">
+        <span className="text-xs text-muted-foreground" aria-live="polite">
+          {savingConfig ? "Saving…" : dirty ? "Unsaved changes" : "Changes apply to new Discord requests."}
+        </span>
+        <Button disabled={busy || !dirty} onClick={() => void saveConfiguration()}>Save configuration</Button>
+      </div>
+    </div>
+  );
+}
+
+function DiscordSettings() {
+  const state = useDiscordStatus();
+  if (!state.status) return <LoadingState error={state.error} onRetry={() => void state.refresh()} />;
+  // A paired install must keep its Disconnect escape hatch even when the
+  // gateway is down. Before pairing, only call the token verified once the
+  // gateway has actually connected.
+  if (!state.status.paired && (
+    !state.status.tokenConfigured || state.status.gateway.state !== "connected"
+  )) {
+    return <TokenSetup status={state.status} now={state.now} />;
+  }
+  if (!state.status.paired) return <PairingSetup state={state} />;
+  return <ConnectedPanel state={state} />;
+}
+
 export default definePluginApp((app) => {
-  // Connection is registered first so onboarding sits above the settings that
-  // only matter once Discord is talking to BB.
   app.slots.settingsSection({
-    id: "connection",
-    title: "Connection",
-    description: "Add the bot token, invite the bot, and pair one Discord server.",
-    component: ConnectionPanel,
-  });
-  app.slots.settingsSection({
-    id: "configuration",
-    title: "Configuration",
-    description: "The values in effect right now, including the ones pairing filled in.",
-    component: ConfigurationPanel,
+    id: "setup",
+    title: "Discord setup",
+    description: "Verify the bot first. Connection details and settings appear only when they are useful.",
+    component: DiscordSettings,
   });
 });

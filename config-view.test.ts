@@ -5,7 +5,6 @@ import {
   botDisplayName,
   botSentenceName,
   channelLabel,
-  derivedGuildId,
   destructiveActionsState,
   effectiveHomeChannel,
   maskBotToken,
@@ -63,27 +62,15 @@ test("an unpaired plugin with no home channel says so instead of showing nothing
   assert.equal(channelLabel(home), "Not set");
 });
 
-test("the guild id shows its pairing provenance even with an empty setting", () => {
-  assert.deepEqual(derivedGuildId(undefined, "guild_1"), {
-    value: "guild_1",
-    source: "pairing",
-  });
-  assert.deepEqual(derivedGuildId("guild_manual", null), {
-    value: "guild_manual",
-    source: "setting",
-  });
-  assert.deepEqual(derivedGuildId(" ", null), { value: null, source: "none" });
-});
-
-test("the person who paired is listed even when the advanced field is empty", () => {
+test("the person who paired is always listed", () => {
   assert.deepEqual(
-    authorizedUsers([], [], { userId: "user_1", userTag: "mayank" }),
+    authorizedUsers([], { userId: "user_1", userTag: "mayank" }),
     [{ id: "user_1", tag: "mayank", source: "pairing" }],
   );
 });
 
-test("pairing provenance wins over a duplicate entry in the advanced field", () => {
-  const users = authorizedUsers(["user_1"], ["user_2"], {
+test("pairing provenance wins over a duplicate allowlist entry", () => {
+  const users = authorizedUsers(["user_1", "user_2"], {
     userId: "user_1",
     userTag: "mayank",
   });

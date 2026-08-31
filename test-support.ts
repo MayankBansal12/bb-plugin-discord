@@ -51,6 +51,7 @@ export function executionFixture(
     },
     summary: "Discord requests open a BB thread in Personal.",
     issues: [],
+    projects: [],
     machines: [],
     models: [],
     catalogUnavailable: false,
