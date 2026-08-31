@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildPairingStatus } from "./pairing-status.js";
+import { configurationFixture, executionFixture } from "./test-support.js";
+
+/** The signing tail of a Discord bot token; must never appear in the DTO. */
+const SECRET_TOKEN_TAIL = "mNoPqRsTuVwXyZ";
 
 const base = {
   gatewayState: "disconnected" as const,
@@ -12,6 +16,14 @@ const base = {
   legacyGuildId: null,
   pairingCode: null,
   inviteUrl: "https://discord.com/oauth2/authorize?client_id=1",
+  configuration: configurationFixture({
+    botToken: {
+      configured: true,
+      applicationId: "123456789012345678",
+      masked: "••••••••••••",
+    },
+  }),
+  execution: executionFixture(),
 };
 
 test("the RPC status formats a pairing command without exposing a token", () => {
@@ -27,8 +39,12 @@ test("the RPC status formats a pairing command without exposing a token", () => 
     expiresAt: 10_000,
     command: "<@123456789012345678> pair ABC-123",
   });
-  assert.equal(JSON.stringify(result).includes("botToken"), false);
-  assert.equal(JSON.stringify(result).includes("token-value"), false);
+  // The DTO carries a masked token so the panel can show that one exists; what
+  // it must never carry is any part of the live value.
+  const serialized = JSON.stringify(result);
+  assert.equal(serialized.includes("token-value"), false);
+  assert.equal(serialized.includes(SECRET_TOKEN_TAIL), false);
+  assert.equal(result.configuration.botToken.masked, "••••••••••••");
 });
 
 test("the RPC never invents a plain-text mention before Discord identifies the bot", () => {

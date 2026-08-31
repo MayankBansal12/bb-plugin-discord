@@ -5,13 +5,16 @@ import {
   formatDuration,
   pairingPanelView,
   pairingSignalReason,
+  setupView,
 } from "./pairing-ui.js";
+import { configurationFixture, executionFixture } from "./test-support.js";
 
 function status(
   overrides: Partial<DiscordPairingStatus> = {},
 ): DiscordPairingStatus {
   return {
     gateway: { state: "disconnected", botTag: null, message: null },
+    botName: "the bot",
     tokenConfigured: false,
     paired: false,
     pairing: null,
@@ -19,6 +22,8 @@ function status(
     inviteUrl: null,
     legacySettingsRequireCleanup: false,
     notice: null,
+    configuration: configurationFixture(),
+    execution: executionFixture(),
     ...overrides,
   };
 }
@@ -125,4 +130,82 @@ test("only structured realtime invalidations trigger a refresh", () => {
   assert.equal(pairingSignalReason({ reason: 42 }), null);
   assert.equal(pairingSignalReason("paired"), null);
   assert.equal(pairingSignalReason(null), null);
+});
+
+
+test("onboarding opens on the token step and expands only that step", () => {
+  const view = setupView(status());
+  assert.equal(view.stage, "token");
+  assert.deepEqual(
+    view.steps.map((step) => step.state),
+    ["active", "upcoming", "upcoming"],
+  );
+  assert.equal(view.steps[0]!.summary, "Not set");
+  assert.equal(view.progress, 0);
+});
+
+test("a saved token collapses step one to its masked, recognizable value", () => {
+  const view = setupView(
+    status({
+      tokenConfigured: true,
+      gateway: { state: "connected", botTag: "nova", message: null },
+      inviteUrl: "https://discord.com/oauth2/authorize?client_id=1",
+      pairingCode: { code: "ABC-123", expiresAt: 10_000, command: "<@1> pair ABC-123" },
+      configuration: configurationFixture({
+        botToken: {
+          configured: true,
+          applicationId: "123456789012345678",
+          masked: "••••••••••••",
+        },
+      }),
+    }),
+  );
+  assert.equal(view.stage, "pair");
+  assert.equal(view.steps[0]!.state, "done");
+  assert.equal(
+    view.steps[0]!.summary,
+    "Application 123456789012345678 · ••••••••••••",
+  );
+  assert.equal(view.steps[0]!.summary.includes("MT"), false);
+  assert.equal(view.steps[2]!.state, "active");
+});
+
+test("a rejected token blocks step one rather than advancing past it", () => {
+  const view = setupView(
+    status({
+      tokenConfigured: true,
+      gateway: {
+        state: "failed",
+        botTag: null,
+        message: "Discord rejected the bot token.",
+      },
+    }),
+  );
+  assert.equal(view.stage, "token");
+  assert.equal(view.steps[0]!.state, "blocked");
+  assert.equal(view.steps[0]!.summary, "Discord rejected the bot token.");
+});
+
+test("a paired plugin reports completion so the panel can collapse", () => {
+  const view = setupView(
+    status({
+      tokenConfigured: true,
+      paired: true,
+      gateway: { state: "connected", botTag: "nova", message: null },
+      pairing: {
+        source: "pairing",
+        guildId: "guild-1",
+        guildName: "Builders",
+        channelId: "channel-1",
+        channelName: "agents",
+        userId: "user-1",
+        userTag: "mayank",
+        pairedAt: 500,
+      },
+    }),
+  );
+  assert.equal(view.stage, "paired");
+  assert.equal(view.progress, 1);
+  assert.ok(view.steps.every((step) => step.state === "done"));
+  assert.equal(view.steps[2]!.summary, "Paired with Builders");
 });

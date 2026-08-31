@@ -1,38 +1,299 @@
-.discord-panel { display: grid; gap: 1rem; color: var(--foreground); }
-.discord-status-grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
-.discord-card, .discord-setup, .discord-danger { border: 1px solid var(--border); border-radius: .75rem; background: var(--card); }
-.discord-card { padding: 1rem; }
-.discord-card h3, .discord-setup h3, .discord-danger h3 { margin: 0; font-size: .875rem; font-weight: 600; }
-.discord-card strong { display: block; margin-top: .75rem; font-size: 1rem; }
-.discord-card p, .discord-setup p, .discord-danger p { margin: .25rem 0 0; color: var(--muted-foreground); font-size: .8125rem; line-height: 1.45; }
-.discord-card__heading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
-.discord-card__heading:first-child { justify-content: flex-start; }
-.discord-dot { width: .5rem; height: .5rem; border-radius: 999px; background: var(--muted-foreground); }
-.discord-dot--connected { background: var(--primary); }
-.discord-dot--failed { background: var(--destructive); }
-.discord-badge { margin-left: auto; border-radius: 999px; background: var(--muted); padding: .2rem .5rem; color: var(--muted-foreground); font-size: .6875rem; font-weight: 600; }
-.discord-details { display: grid; gap: .4rem; margin: .75rem 0 0; }
-.discord-details div { display: grid; grid-template-columns: 4rem minmax(0, 1fr); gap: .5rem; font-size: .8125rem; }
-.discord-details dt { color: var(--muted-foreground); }
-.discord-details dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.discord-setup { display: grid; gap: 1rem; padding: 1rem; }
-.discord-eyebrow { margin: 0 0 .25rem !important; color: var(--primary) !important; font-size: .6875rem !important; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
-.discord-steps { display: grid; gap: .875rem; margin: 0; padding: 0; list-style: none; }
-.discord-steps li { display: grid; grid-template-columns: 1.75rem minmax(0, 1fr); gap: .625rem; align-items: start; }
-.discord-steps li > span { display: grid; place-items: center; width: 1.5rem; height: 1.5rem; border-radius: 999px; background: var(--muted); font-size: .75rem; font-weight: 700; }
-.discord-steps strong { display: block; font-size: .8125rem; }
-.discord-link { display: inline-block; margin-top: .35rem; color: var(--primary); font-size: .8125rem; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
-.discord-code-row { display: flex; gap: .5rem; align-items: center; margin-top: .5rem; }
-.discord-code-row code { min-width: 0; flex: 1; overflow: auto; border: 1px solid var(--border); border-radius: .5rem; background: var(--muted); padding: .55rem .65rem; font-size: .8125rem; white-space: nowrap; }
+/* Discord plugin panels.
+ *
+ * Motion budget: these panels are opened occasionally, so entrances get a short
+ * ease-out and everything else is a press or colour response. Only transform,
+ * opacity, filter and colour animate; nothing here animates layout. */
+
+.discord-panel {
+  --dc-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --dc-press: 160ms var(--dc-ease-out);
+  display: grid;
+  gap: 1rem;
+  color: var(--foreground);
+}
+
+/* --- gateway ------------------------------------------------------------- */
+
+.discord-gateway {
+  display: flex;
+  align-items: center;
+  gap: .625rem;
+  border: 1px solid var(--border);
+  border-radius: .75rem;
+  background: var(--card);
+  padding: .875rem 1rem;
+}
+.discord-gateway strong { display: block; font-size: .875rem; font-weight: 600; }
+.discord-gateway p { margin: .125rem 0 0; color: var(--muted-foreground); font-size: .8125rem; }
+.discord-gateway .discord-badge { margin-left: auto; }
+
+.discord-dot {
+  width: .5rem;
+  height: .5rem;
+  flex: none;
+  border-radius: 999px;
+  background: var(--muted-foreground);
+  transition: background-color 200ms ease;
+}
+.discord-gateway--connected .discord-dot { background: var(--primary); }
+.discord-gateway--failed .discord-dot { background: var(--destructive); }
+.discord-gateway--connecting .discord-dot { animation: discord-pulse 1.4s linear infinite; }
+
+@keyframes discord-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
+
+/* --- onboarding steps ---------------------------------------------------- */
+
+.discord-steps { display: grid; gap: .25rem; margin: 0; padding: 0; list-style: none; }
+
+.discord-step {
+  display: grid;
+  grid-template-columns: 1.75rem minmax(0, 1fr);
+  gap: .625rem;
+  align-items: start;
+  border-radius: .75rem;
+  padding: .625rem .5rem;
+  /* Short, staggered entrance: the list arrives after an RPC round trip, so
+   * without it the whole panel snaps in at once. */
+  opacity: 0;
+  transform: translateY(4px);
+  animation: discord-step-in 220ms var(--dc-ease-out) forwards;
+  animation-delay: calc(var(--discord-step-index, 0) * 45ms);
+}
+.discord-step--active { background: var(--muted); }
+.discord-step--upcoming { opacity: .55; }
+
+@keyframes discord-step-in {
+  to { opacity: 1; transform: translateY(0); }
+}
+.discord-step--upcoming { animation-name: discord-step-in-muted; }
+@keyframes discord-step-in-muted {
+  to { opacity: .55; transform: translateY(0); }
+}
+
+.discord-step__marker {
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  background: var(--background);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: .75rem;
+  font-weight: 700;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+.discord-step--done .discord-step__marker { background: var(--primary); color: var(--primary-foreground); box-shadow: none; }
+.discord-step--blocked .discord-step__marker { background: var(--destructive); color: var(--destructive-foreground); box-shadow: none; }
+
+.discord-step__body { min-width: 0; display: grid; gap: .25rem; }
+.discord-step__body strong { font-size: .8125rem; font-weight: 600; }
+.discord-step__summary { margin: 0; color: var(--muted-foreground); font-size: .8125rem; overflow-wrap: anywhere; }
+.discord-step--blocked .discord-step__summary { color: var(--destructive); }
+.discord-step__detail { display: grid; gap: .5rem; margin-top: .375rem; }
+.discord-step__detail p { margin: 0; color: var(--muted-foreground); font-size: .8125rem; line-height: 1.5; }
+
+/* --- links --------------------------------------------------------------- */
+
+.discord-links { display: flex; flex-wrap: wrap; gap: .75rem; }
+.discord-link {
+  color: var(--primary);
+  font-size: .8125rem;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  transition: opacity var(--dc-press);
+}
+.discord-link--strong { font-size: .875rem; }
+@media (hover: hover) and (pointer: fine) {
+  .discord-link:hover { opacity: .78; }
+}
+
+/* --- pairing command ----------------------------------------------------- */
+
+.discord-code-row { display: flex; gap: .5rem; align-items: center; }
+.discord-code-row code {
+  min-width: 0;
+  flex: 1;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: .5rem;
+  background: var(--muted);
+  padding: .55rem .65rem;
+  font-size: .8125rem;
+  white-space: nowrap;
+}
 .discord-expiry { font-variant-numeric: tabular-nums; }
-.discord-button { width: fit-content; border: 1px solid transparent; border-radius: .5rem; padding: .45rem .7rem; font: inherit; font-size: .75rem; font-weight: 600; cursor: pointer; }
+.discord-hint { margin: 0; color: var(--muted-foreground); font-size: .75rem; line-height: 1.5; }
+
+/* --- buttons ------------------------------------------------------------- */
+
+.discord-button {
+  width: fit-content;
+  border: 1px solid transparent;
+  border-radius: .5rem;
+  padding: .45rem .7rem;
+  font: inherit;
+  font-size: .75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform var(--dc-press), opacity var(--dc-press);
+}
+.discord-button:active:not(:disabled) { transform: scale(0.97); }
 .discord-button:disabled { cursor: default; opacity: .55; }
 .discord-button--secondary { border-color: var(--border); background: var(--background); color: var(--foreground); }
 .discord-button--danger { background: var(--destructive); color: var(--destructive-foreground); }
-.discord-danger { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem; }
-.discord-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5rem; }
-.discord-notice, .discord-error { margin: 0; border-radius: .5rem; padding: .65rem .75rem; font-size: .8125rem; }
+
+/* The label swap crossfades two words in place. Blur bridges the moment where
+ * both are partly visible, so the eye reads one word changing rather than two
+ * strings overlapping. The slot is sized by the longer label so the button
+ * never reflows. */
+.discord-swap__slot { position: relative; display: inline-grid; }
+.discord-swap__label {
+  grid-area: 1 / 1;
+  transition: opacity 180ms ease, filter 180ms ease;
+}
+.discord-swap__label--alt { opacity: 0; filter: blur(2px); }
+.discord-button--swap[data-copied="true"] .discord-swap__label { opacity: 0; filter: blur(2px); }
+.discord-button--swap[data-copied="true"] .discord-swap__label--alt { opacity: 1; filter: blur(0); }
+
+.discord-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.discord-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .5rem; }
+
+/* --- switch -------------------------------------------------------------- */
+
+.discord-switch {
+  position: relative;
+  width: 2.125rem;
+  height: 1.25rem;
+  flex: none;
+  border: none;
+  border-radius: 999px;
+  background: var(--muted);
+  box-shadow: inset 0 0 0 1px var(--border);
+  cursor: pointer;
+  transition: background-color 180ms ease, transform var(--dc-press), opacity var(--dc-press);
+}
+.discord-switch:active:not(:disabled) { transform: scale(0.97); }
+.discord-switch:disabled { cursor: default; opacity: .5; }
+.discord-switch[aria-checked="true"] { background: var(--primary); box-shadow: none; }
+.discord-switch__thumb {
+  position: absolute;
+  top: .1875rem;
+  left: .1875rem;
+  width: .875rem;
+  height: .875rem;
+  border-radius: 999px;
+  background: var(--background);
+  transition: transform 180ms var(--dc-ease-out);
+}
+.discord-switch[aria-checked="true"] .discord-switch__thumb { transform: translateX(.875rem); }
+
+/* --- selects ------------------------------------------------------------- */
+
+.discord-field { display: grid; gap: .3125rem; }
+.discord-field label { cursor: pointer; }
+
+.discord-select {
+  width: 100%;
+  max-width: 22rem;
+  border: 1px solid var(--border);
+  border-radius: .5rem;
+  background: var(--background);
+  padding: .4rem .55rem;
+  color: var(--foreground);
+  font: inherit;
+  font-size: .8125rem;
+  cursor: pointer;
+  transition: border-color 160ms ease, opacity var(--dc-press);
+}
+.discord-select:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.discord-select:disabled { cursor: progress; opacity: .55; }
+@media (hover: hover) and (pointer: fine) {
+  .discord-select:hover:not(:disabled) { border-color: var(--muted-foreground); }
+}
+/* A select's own popup is OS chrome, so the only thing worth animating here is
+ * the busy state — and that reads better as an opacity change than as motion. */
+.discord-group[aria-busy="true"] { transition: opacity 160ms ease; }
+
+/* --- configuration rows -------------------------------------------------- */
+
+.discord-group { display: grid; gap: .625rem; border: 1px solid var(--border); border-radius: .75rem; background: var(--card); padding: .875rem 1rem; }
+.discord-group h4 { margin: 0; font-size: .8125rem; font-weight: 600; }
+.discord-group__lede { margin: 0; color: var(--muted-foreground); font-size: .8125rem; line-height: 1.5; }
+
+.discord-row { display: grid; gap: .1875rem; }
+.discord-row__head { display: flex; align-items: center; gap: .5rem; }
+.discord-row__label { color: var(--muted-foreground); font-size: .75rem; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; }
+.discord-row__head .discord-badge { margin-left: auto; }
+.discord-row__head .discord-switch { margin-left: auto; }
+.discord-row__value { font-size: .8125rem; overflow-wrap: anywhere; }
+
+.discord-badge {
+  border-radius: 999px;
+  background: var(--muted);
+  padding: .15rem .45rem;
+  color: var(--muted-foreground);
+  font-size: .625rem;
+  font-weight: 600;
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
+
+.discord-details { display: grid; gap: .4rem; margin: 0; }
+.discord-details div { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: .5rem; font-size: .8125rem; }
+.discord-details dt { color: var(--muted-foreground); }
+.discord-details dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.discord-issues { display: grid; gap: .375rem; margin: 0; padding-left: 1.1rem; color: var(--destructive); font-size: .8125rem; line-height: 1.5; }
+
+/* --- disclosure ---------------------------------------------------------- */
+
+.discord-disclosure {
+  display: grid;
+  gap: .625rem;
+  border: 1px solid var(--border);
+  border-radius: .75rem;
+  background: var(--card);
+  padding: .625rem .875rem;
+}
+.discord-disclosure > summary { cursor: pointer; font-size: .8125rem; font-weight: 600; list-style-position: outside; }
+.discord-disclosure[open] > summary { margin-bottom: .625rem; }
+.discord-disclosure > :not(summary) { animation: discord-step-in 200ms var(--dc-ease-out) backwards; }
+.discord-disclosure p { margin: 0 0 .5rem; color: var(--muted-foreground); font-size: .8125rem; line-height: 1.5; }
+.discord-disclosure--danger > summary { color: var(--destructive); }
+
+/* --- messages ------------------------------------------------------------ */
+
+.discord-notice, .discord-error { margin: 0; border-radius: .5rem; padding: .625rem .75rem; font-size: .8125rem; line-height: 1.5; }
 .discord-notice { background: var(--muted); color: var(--muted-foreground); }
 .discord-error { border: 1px solid var(--destructive); color: var(--destructive); }
-.discord-panel--loading { min-height: 5rem; place-items: center; color: var(--muted-foreground); font-size: .8125rem; }
-@media (max-width: 640px) { .discord-danger { align-items: stretch; flex-direction: column; } .discord-actions { justify-content: flex-start; } }
+
+.discord-panel--loading {
+  display: flex;
+  min-height: 4rem;
+  align-items: center;
+  justify-content: center;
+  gap: .75rem;
+  color: var(--muted-foreground);
+  font-size: .8125rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .discord-step, .discord-disclosure > :not(summary) { animation: none; opacity: 1; transform: none; }
+  .discord-step--upcoming { opacity: .55; }
+  .discord-gateway--connecting .discord-dot { animation: none; }
+  .discord-button:active:not(:disabled), .discord-switch:active:not(:disabled) { transform: none; }
+  .discord-switch__thumb { transition: none; }
+  .discord-swap__label { transition: opacity 150ms ease; filter: none; }
+}

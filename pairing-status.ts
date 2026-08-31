@@ -1,5 +1,10 @@
-import type { DiscordPairingStatus } from "./contract.js";
+import type {
+  DiscordConfigurationStatus,
+  DiscordExecutionStatus,
+  DiscordPairingStatus,
+} from "./contract.js";
 import { formatPairingCode, type PendingPairingCode } from "./pairing.js";
+import { botDisplayName } from "./config-view.js";
 
 export interface StoredPairingStatus {
   guildId: string;
@@ -21,6 +26,8 @@ export interface PairingStatusInput {
   legacyGuildId: string | null;
   pairingCode: PendingPairingCode | null;
   inviteUrl: string | null;
+  configuration: DiscordConfigurationStatus;
+  execution: DiscordExecutionStatus;
   notice?: string | null;
 }
 
@@ -46,6 +53,7 @@ export function buildPairingStatus(
       botTag: input.botTag,
       message: input.gatewayMessage,
     },
+    botName: botDisplayName(input.botTag),
     tokenConfigured: input.tokenConfigured,
     paired: activeGuildId !== null,
     pairing: input.storedPairing
@@ -82,5 +90,7 @@ export function buildPairingStatus(
     inviteUrl: input.inviteUrl,
     legacySettingsRequireCleanup: input.legacyGuildId !== null,
     notice: input.notice ?? null,
+    configuration: input.configuration,
+    execution: input.execution,
   };
 }

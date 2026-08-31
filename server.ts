@@ -36,16 +36,40 @@ import {
   resolveSpawnPermissionMode,
   retryDelayMs,
   verifyPairingCode,
-  type BbPermissionMode,
   type DiscordAccessLevel,
   type PendingPairingCode,
 } from "./pairing.js";
 import { availableToolNames, registerDiscordTools } from "./tools.js";
 import {
   discordRpcContract,
+  type DiscordConfigurationStatus,
+  type DiscordExecutionStatus,
   type DiscordPairingStatus,
 } from "./contract.js";
 import { buildPairingStatus, pairingCommand } from "./pairing-status.js";
+import {
+  accessLevelLabel,
+  authorizedUsers,
+  botDisplayName,
+  botSentenceName,
+  channelLabel,
+  derivedGuildId,
+  destructiveActionsState,
+  effectiveHomeChannel,
+  maskBotToken,
+  permissionModeLabel,
+} from "./config-view.js";
+import {
+  buildExecutionView,
+  readExecutionSelection,
+  resolveExecution,
+  validateSelectionRequest,
+  type ExecutionResolution,
+  type MachineCatalog,
+  type MachineInfo,
+  type ProjectExecutionDefaults,
+  type ProjectInfo,
+} from "./execution.js";
 
 const MAX_PROMPT_CHARS = 8000;
 const MAX_REPLY_CHARS = 1800;
@@ -128,27 +152,23 @@ export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, migrations);
 
+  // Ordered so the connection essentials come first and the machinery that
+  // only matters once Discord is talking to BB comes last.
   const settings = bb.settings.define({
     botToken: {
       type: "string",
       secret: true,
       label: "Discord bot token",
       description:
-        "Paste the token from the Discord Developer Portal. BB stores it as a secret and never sends it to the app UI.",
-    },
-    defaultProjectId: {
-      type: "project",
-      label: "Default BB project",
-      description:
-        "Project used for Discord-started BB threads. Leave empty to use your personal project.",
+        "Step 1. Create an app at https://discord.com/developers/applications, open Bot, enable Message Content Intent, then Reset Token and paste it here. BB stores it as a secret and never sends it to the app UI. The Connection panel below walks through the rest.",
     },
     permissionMode: {
       type: "select",
       label: "Permission mode for Discord threads",
-      options: ["accept-edits", "auto", "full", "project-default"],
-      default: "accept-edits",
+      options: ["auto", "accept-edits", "full", "project-default"],
+      default: "auto",
       description:
-        "Discord is the least trusted input BB takes, so threads started from it run in the least privileged mode by default.",
+        "How much a Discord-started thread may do without asking. Auto is the default: BB checks in before anything risky. A machine with a lower ceiling lowers this further.",
     },
     serverAccess: {
       type: "select",
@@ -156,32 +176,56 @@ export default async function plugin(bb: BbPluginApi) {
       options: ["messages", "full"],
       default: "messages",
       description:
-        "Messages lets BB read and post messages and threads. Full also allows channel, role, and member administration.",
+        "Messages lets BB read and post messages and threads. Full also allows channel, role, and member administration. Changing this changes the invite link the Connection panel shows.",
     },
     allowDestructiveServerActions: {
       type: "boolean",
       label: "Allow destructive server actions",
       default: false,
       description:
-        "Permits deleting channels and kicking, banning or timing out members. Requires full server access.",
+        "Permits deleting channels and kicking, banning or timing out members. Independent of the setting above: turning this on never changes Discord server access, and the tools stay hidden until access is Full. Use the toggle in the Configuration panel below for the guided version.",
+    },
+    defaultProjectId: {
+      type: "project",
+      label: "Project for Discord threads",
+      description:
+        "Optional. Which BB project a Discord request opens a thread in — this decides the checkout the agent gets. Leave empty to use your personal project.",
+    },
+    machineHostId: {
+      type: "string",
+      label: "Machine for Discord threads",
+      description:
+        "Optional. The enrolled BB machine that runs Discord-started threads. Pick it from the Machine list in the Configuration panel below rather than typing an id here. Empty means the project default; a project must have a checkout on the machine you pick.",
+    },
+    providerId: {
+      type: "string",
+      label: "Provider for Discord threads",
+      description:
+        "Optional, and only read when a model is set. The agent provider id, e.g. `claude-code` or `codex`. The Model list in the Configuration panel below sets this for you. Empty means the project default provider.",
+    },
+    model: {
+      type: "string",
+      label: "Model for Discord threads",
+      description:
+        "Optional. Pick it from the Model list in the Configuration panel below, which offers only what the selected machine can actually serve. Empty means the project default.",
     },
     spawnChannelId: {
       type: "string",
-      label: "Restrict new conversations to a channel",
+      label: "Only start conversations in this channel",
       description:
-        "Optional. Leave empty to let the bot start conversations anywhere in the paired server.",
+        "Optional. When set, mentioning the bot anywhere else is refused instead of opening a new BB conversation. Existing conversation threads keep working wherever they are. Leave empty to allow any channel in the paired server.",
     },
     homeChannelId: {
       type: "string",
-      label: "Home channel ID",
+      label: "Home channel for status and alerts",
       description:
-        "Optional. Bridge status and failure alerts go here; defaults to the channel you paired in.",
+        "Optional. Bridge status and failure alerts go here. Leave empty and they go to the channel the pairing command ran in; the Configuration panel below shows which channel that resolves to.",
     },
     guildId: {
       type: "string",
       label: "Advanced: server (guild) ID",
       description:
-        "Normally filled in by pairing. Set this only to pin a server by hand.",
+        "Normally filled in by pairing and shown read-only in the Configuration panel below. Set this only to pin a server by hand.",
     },
     allowedUserIds: {
       type: "string",
@@ -199,6 +243,12 @@ export default async function plugin(bb: BbPluginApi) {
   let botTag: string | null = null;
   let gatewayState: DiscordPairingStatus["gateway"]["state"] = "disconnected";
   let gatewayMessage: string | null = null;
+
+  // Discord copy speaks as the bot the operator invited. Before the gateway
+  // identifies it these fall back to a neutral placeholder rather than a
+  // hardcoded product name that is not what anyone sees in the member list.
+  const botName = (): string => botDisplayName(botTag);
+  const botName_ = (): string => botSentenceName(botTag);
 
   const publishPairingState = (reason: string): void => {
     bb.realtime.publish(PAIRING_REALTIME_CHANNEL, { reason });
@@ -238,6 +288,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   settings.onChange((next, prev) => {
     cached = next;
+    executionCache = null;
     publishPairingState("settings-changed");
     if (next.botToken !== prev.botToken) {
       // Only the token requires a new gateway connection; everything else is
@@ -337,7 +388,281 @@ export default async function plugin(bb: BbPluginApi) {
     return pendingCode;
   };
 
-  const pairingStatus = (notice: string | null = null): DiscordPairingStatus => {
+  // ---------------------------------------------------------------------
+  // Execution selection (project + machine + model)
+  // ---------------------------------------------------------------------
+
+  interface ExecutionContext {
+    project: ProjectInfo | null;
+    projectError: string | null;
+    machines: MachineInfo[] | null;
+    machine: MachineInfo | null;
+    catalog: MachineCatalog | null;
+    defaults: ProjectExecutionDefaults | null;
+  }
+
+  // The panel refreshes on every realtime pairing signal, and three SDK round
+  // trips per refresh is wasteful for state that changes on the order of
+  // minutes. Stale entries are never used for a spawn — `spawnBbThread` always
+  // reloads.
+  const EXECUTION_CACHE_MS = 15_000;
+  let executionCache: { at: number; value: ExecutionContext } | null = null;
+
+  const listMachines = async (): Promise<MachineInfo[] | null> => {
+    try {
+      const hosts = await bb.sdk.hosts.list();
+      return hosts.map((host) => ({
+        id: host.id,
+        name: host.name,
+        status: host.status,
+        maxPermissionMode: host.maxPermissionMode,
+      }));
+    } catch (error) {
+      bb.log.warn(`Could not list BB machines: ${errorMessage(error)}`);
+      return null;
+    }
+  };
+
+  /**
+   * The unconfigured fallback is the personal project, never "the first
+   * project on the list" — that would let an arbitrary repository be driven
+   * from Discord the moment someone cleared the setting.
+   */
+  const loadProject = async (
+    configuredProjectId: string | null,
+  ): Promise<{ project: ProjectInfo | null; error: string | null }> => {
+    try {
+      const projects = await bb.sdk.projects.list({ includePersonal: true });
+      const chosen = configuredProjectId
+        ? projects.find((project) => project.id === configuredProjectId)
+        : projects.find((project) => project.kind === "personal");
+      if (!chosen) {
+        return {
+          project: null,
+          error: configuredProjectId
+            ? `Project \`${configuredProjectId}\` no longer exists. Pick a different project in Settings → Plugins → Discord.`
+            : "No personal BB project is available. Pick a project in Settings → Plugins → Discord.",
+        };
+      }
+      return {
+        project: {
+          id: chosen.id,
+          name: chosen.name,
+          kind: chosen.kind,
+          hostIds: [...new Set(chosen.sources.map((source) => source.hostId))],
+        },
+        error: null,
+      };
+    } catch (error) {
+      return { project: null, error: `Could not read BB projects: ${errorMessage(error)}` };
+    }
+  };
+
+  const loadCatalog = async (hostId: string | null): Promise<MachineCatalog | null> => {
+    try {
+      const catalog = hostId
+        ? await bb.sdk.providers.models({ hostId })
+        : await bb.sdk.providers.models();
+      return {
+        providers: catalog.providers.map((provider) => ({
+          id: provider.id,
+          displayName: provider.displayName,
+          available: provider.available,
+        })),
+        models: catalog.models.map((model) => ({
+          model: model.model,
+          displayName: model.displayName,
+          isDefault: model.isDefault,
+          defaultReasoningEffort: model.defaultReasoningEffort,
+          routeProviderId: model.routeProviderId,
+        })),
+        permissionCeiling: catalog.permissionCeiling,
+        loadError: catalog.modelLoadError
+          ? {
+              providerId: catalog.modelLoadError.providerId,
+              code: catalog.modelLoadError.code,
+            }
+          : null,
+      };
+    } catch (error) {
+      bb.log.warn(
+        `Could not read the model catalog${hostId ? ` for machine ${hostId}` : ""}: ${errorMessage(error)}`,
+      );
+      return null;
+    }
+  };
+
+  const loadExecutionContext = async (
+    values: SettingsValues,
+  ): Promise<ExecutionContext> => {
+    const selection = readExecutionSelection(values);
+    const [{ project, error: projectError }, machines] = await Promise.all([
+      loadProject(selection.projectId),
+      listMachines(),
+    ]);
+    const machine =
+      selection.hostId && machines
+        ? machines.find((entry) => entry.id === selection.hostId) ?? null
+        : null;
+    const catalog = await loadCatalog(selection.hostId);
+    let defaults: ProjectExecutionDefaults | null = null;
+    if (project) {
+      try {
+        defaults = await bb.sdk.projects.defaultExecutionOptions({
+          projectId: project.id,
+        });
+      } catch (error) {
+        bb.log.warn(
+          `Could not read execution defaults for project ${project.id}: ${errorMessage(error)}`,
+        );
+      }
+    }
+    return { project, projectError, machines, machine, catalog, defaults };
+  };
+
+  const executionContext = async (
+    values: SettingsValues,
+  ): Promise<ExecutionContext> => {
+    if (executionCache && Date.now() - executionCache.at < EXECUTION_CACHE_MS) {
+      return executionCache.value;
+    }
+    const value = await loadExecutionContext(values);
+    executionCache = { at: Date.now(), value };
+    return value;
+  };
+
+  const resolveExecutionFor = (
+    values: SettingsValues,
+    context: ExecutionContext,
+  ): ExecutionResolution | null => {
+    if (!context.project || !context.defaults) return null;
+    return resolveExecution({
+      selection: readExecutionSelection(values),
+      project: context.project,
+      defaults: context.defaults,
+      permissionMode: resolveSpawnPermissionMode(
+        values.permissionMode,
+        context.defaults.permissionMode,
+      ),
+      machine: context.machine,
+      catalog: context.catalog,
+    });
+  };
+
+  /**
+   * The picker only offers combinations that would actually resolve: a model
+   * whose provider is signed out on that machine is not a choice, it is a
+   * future error.
+   */
+  const catalogModelOptions = (
+    context: ExecutionContext,
+  ): DiscordExecutionStatus["models"] => {
+    const catalog = context.catalog;
+    if (!catalog) return [];
+    const fallbackProviderId = context.defaults?.providerId ?? "";
+    return catalog.models.flatMap((model) => {
+      const providerId = model.routeProviderId ?? fallbackProviderId;
+      const provider = catalog.providers.find((entry) => entry.id === providerId);
+      if (!provider || !provider.available) return [];
+      return [
+        {
+          providerId,
+          providerDisplayName: provider.displayName,
+          model: model.model,
+          displayName: model.displayName,
+          isDefault: model.isDefault,
+        },
+      ];
+    });
+  };
+
+  const executionStatus = async (): Promise<DiscordExecutionStatus> => {
+    const context = await executionContext(cached);
+    const selection = readExecutionSelection(cached);
+    const resolution = resolveExecutionFor(cached, context);
+    const extraWarnings = [
+      context.projectError,
+      !context.defaults && context.project
+        ? `Project "${context.project.name}" has no execution defaults yet. Open it once in BB and pick a provider and model.`
+        : null,
+      selection.hostId && !context.machines
+        ? "The machine list is unavailable right now, so the pinned machine could not be checked."
+        : null,
+    ].filter((entry): entry is string => entry !== null);
+
+    const view = buildExecutionView({
+      selection,
+      project: context.project,
+      machine: context.machine,
+      defaults: context.defaults,
+      resolution,
+      warnings: extraWarnings,
+    });
+
+    return {
+      project: view.project,
+      machine: view.machine,
+      model: view.model,
+      summary: view.summary,
+      issues: view.issues,
+      machines: (context.machines ?? []).map((machine) => ({
+        id: machine.id,
+        name: machine.name,
+        status: machine.status,
+      })),
+      models: catalogModelOptions(context),
+      catalogUnavailable: context.catalog === null,
+    };
+  };
+
+  const configurationStatus = (): DiscordConfigurationStatus => {
+    const pairing = getPairing();
+    const pairingView = pairing
+      ? {
+          channelId: pairing.channel_id,
+          channelName: pairing.channel_name,
+          userId: pairing.user_id,
+          userTag: pairing.user_tag,
+        }
+      : null;
+    const token = maskBotToken(cached.botToken);
+    const home = effectiveHomeChannel(cached.homeChannelId, pairingView);
+    const spawn = effectiveHomeChannel(cached.spawnChannelId, null);
+    const guild = derivedGuildId(cached.guildId, getPairing()?.guild_id ?? null);
+    const level = accessLevel();
+
+    return {
+      botToken: {
+        configured: token !== null,
+        applicationId: token?.applicationId ?? null,
+        masked: token?.masked ?? null,
+      },
+      permissionMode: {
+        value: cached.permissionMode ?? "auto",
+        label: permissionModeLabel(cached.permissionMode),
+      },
+      serverAccess: { value: level, label: accessLevelLabel(level) },
+      destructiveActions: destructiveActionsState(
+        level,
+        cached.allowDestructiveServerActions === true,
+      ),
+      homeChannel: { ...home, label: channelLabel(home) },
+      newConversationChannel: {
+        ...spawn,
+        label: spawn.id ? channelLabel(spawn) : "Any channel in the paired server",
+      },
+      guild,
+      authorizedUsers: authorizedUsers(
+        parseDiscordIds(cached.allowedUserIds),
+        extraAllowedUsers(),
+        pairingView,
+      ),
+    };
+  };
+
+  const pairingStatus = async (
+    notice: string | null = null,
+  ): Promise<DiscordPairingStatus> => {
     const pairing = getPairing();
     const legacyGuild = legacyGuildId();
     const activeGuild = effectiveGuildId();
@@ -367,6 +692,8 @@ export default async function plugin(bb: BbPluginApi) {
       legacyGuildId: legacyGuild,
       pairingCode: code,
       inviteUrl,
+      configuration: configurationStatus(),
+      execution: await executionStatus(),
       notice,
     });
   };
@@ -404,7 +731,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   const announcePairing = (): void => {
     bb.log.info(
-      `Discord connected as ${botTag ?? "the configured bot"} and is awaiting pairing. Open Settings → Plugins → Discord or explicitly run \`bb discord pair\` to get the one-time command.`,
+      `Discord connected as ${botName()} and is awaiting pairing. Open Settings → Plugins → Discord or explicitly run \`bb discord pair\` to get the one-time command.`,
     );
   };
 
@@ -418,7 +745,84 @@ export default async function plugin(bb: BbPluginApi) {
       publishPairingState("pairing-code-created");
       return pairingStatus();
     },
-    unpair() {
+    /**
+     * Backs the machine and model selects. It writes the three execution keys
+     * and nothing else, and it re-checks the requested pair against the live
+     * catalog first, because the options the panel rendered can be a minute
+     * stale.
+     */
+    async setExecutionSelection(request) {
+      const [machines, machine] = [
+        await listMachines(),
+        request.machineHostId?.trim() || null,
+      ];
+      const catalog = request.model?.trim()
+        ? await loadCatalog(machine)
+        : null;
+
+      const check = validateSelectionRequest({ request, machines, catalog });
+      if (!check.ok) {
+        executionCache = null;
+        return pairingStatus(check.message);
+      }
+
+      try {
+        await bb.sdk.plugins.updateSettings({
+          pluginId: bb.pluginId,
+          values: {
+            machineHostId: check.selection.machineHostId ?? "",
+            providerId: check.selection.providerId ?? "",
+            model: check.selection.model ?? "",
+          },
+        });
+      } catch (error) {
+        return pairingStatus(`Could not save that change: ${errorMessage(error)}`);
+      }
+
+      cached = await settings.get();
+      executionCache = null;
+      publishPairingState("settings-changed");
+      return pairingStatus(
+        check.notice ??
+          (check.selection.machineHostId || check.selection.model
+            ? "Saved where Discord requests run."
+            : "Discord requests follow the project defaults again."),
+      );
+    },
+    /**
+     * Writes one key and only that key. The reported bug was the destructive
+     * control taking Discord server access up to "full" with it; this handler
+     * cannot do that, and refuses outright rather than escalating access on the
+     * operator's behalf.
+     */
+    async setDestructiveActions({ enabled }) {
+      if (enabled && accessLevel() !== "full") {
+        return pairingStatus(
+          "Destructive actions need Discord server access set to Full. Change that setting first — it was left as it is.",
+        );
+      }
+      if ((cached.allowDestructiveServerActions === true) === enabled) {
+        return pairingStatus();
+      }
+      try {
+        await bb.sdk.plugins.updateSettings({
+          pluginId: bb.pluginId,
+          values: { allowDestructiveServerActions: enabled },
+        });
+      } catch (error) {
+        return pairingStatus(
+          `Could not save that change: ${errorMessage(error)}`,
+        );
+      }
+      cached = await settings.get();
+      publishPairingState("settings-changed");
+      return pairingStatus(
+        enabled
+          ? "Destructive Discord actions are on. Discord server access was not changed."
+          : "Destructive Discord actions are off.",
+      );
+    },
+    async unpair() {
       const pairing = getPairing();
       const legacyGuild = legacyGuildId();
       clearPairing();
@@ -628,7 +1032,7 @@ export default async function plugin(bb: BbPluginApi) {
         post: () =>
           postInteractionToThreadChannel(
             bbThreadId,
-            `❓ **BB needs you:** ${prompt}`,
+            `❓ **${botName_()} needs you:** ${prompt}`,
           ),
         markPosted: () => markInteractionPosted(bbThreadId, interaction.id),
       });
@@ -705,55 +1109,70 @@ export default async function plugin(bb: BbPluginApi) {
     void activeThreadWatcher.tick();
   };
 
-  /**
-   * Personal project only. "First available project" used to be the fallback,
-   * which meant an arbitrary repository could be driven from Discord.
-   */
-  const resolveProjectId = async (configured?: string): Promise<string> => {
-    if (configured) return configured;
-    const projects = await bb.sdk.projects.list({ includePersonal: true });
-    const personal = projects.find((project) => project.kind === "personal");
-    if (!personal) {
-      throw new Error(
-        "No personal BB project is available. Pick a default project in Settings → Plugins → Discord.",
-      );
-    }
-    return personal.id;
-  };
-
   const spawnBbThread = async (
     prompt: string,
     message: DiscordInboundMessage,
   ): Promise<{ id: string; projectId: string; title: string | null }> => {
     const values = await settings.get();
-    const projectId = await resolveProjectId(values.defaultProjectId);
-    const defaults = await bb.sdk.projects.defaultExecutionOptions({ projectId });
-    if (!defaults) {
+    // Never spawn off the panel's cache: a machine can go offline or a provider
+    // can be signed out between the last refresh and this request.
+    const context = await loadExecutionContext(values);
+    executionCache = { at: Date.now(), value: context };
+
+    if (!context.project) {
       throw new Error(
-        "The selected BB project has no execution defaults. Open BB once and choose a provider/model for that project.",
+        context.projectError ??
+          "No BB project is available for Discord threads. Pick one in Settings → Plugins → Discord.",
+      );
+    }
+    if (!context.defaults) {
+      throw new Error(
+        `Project "${context.project.name}" has no execution defaults. Open it once in BB and choose a provider and model.`,
       );
     }
 
-    const permissionMode: BbPermissionMode = resolveSpawnPermissionMode(
-      values.permissionMode,
-      defaults.permissionMode,
-    );
+    const resolution = resolveExecution({
+      selection: readExecutionSelection(values),
+      project: context.project,
+      defaults: context.defaults,
+      permissionMode: resolveSpawnPermissionMode(
+        values.permissionMode,
+        context.defaults.permissionMode,
+      ),
+      machine: context.machine,
+      catalog: context.catalog,
+    });
+    if (!resolution.ok) throw new Error(resolution.problem.message);
+    const plan = resolution.plan;
+    for (const warning of plan.warnings) {
+      bb.log.warn(`Discord thread execution: ${warning}`);
+    }
 
     const attributedPrompt = `Discord request from ${message.authorTag} (${message.authorId}):\n\n${prompt}`;
     const thread = await bb.sdk.threads.spawn({
-      projectId,
-      providerId: defaults.providerId,
-      model: defaults.model,
-      reasoningLevel: defaults.reasoningLevel,
-      permissionMode,
-      serviceTier: defaults.serviceTier,
-      environment: { type: "project-default" },
+      projectId: plan.projectId,
+      providerId: plan.providerId,
+      model: plan.model,
+      reasoningLevel: plan.reasoningLevel,
+      permissionMode: plan.permissionMode,
+      serviceTier: plan.serviceTier,
+      environment: plan.environment,
+      // Say which of these the operator actually chose, so BB records the
+      // Discord settings as explicit rather than as a client preference.
+      executionInputSources: {
+        model: values.model?.trim() ? "explicit" : "client-preference",
+        providerId: values.providerId?.trim() ? "explicit" : "client-preference",
+        permissionMode:
+          values.permissionMode === "project-default"
+            ? "client-preference"
+            : "explicit",
+      },
       prompt: attributedPrompt,
       title: truncate(`Discord: ${prompt}`, 100),
       visibility: "hidden",
     });
 
-    return { id: thread.id, projectId, title: thread.title ?? null };
+    return { id: thread.id, projectId: plan.projectId, title: thread.title ?? null };
   };
 
   const createDiscordSession = async (
@@ -763,7 +1182,7 @@ export default async function plugin(bb: BbPluginApi) {
     return client.createThread(
       message.guildId,
       message.channelId,
-      discordSessionName(message.content),
+      discordSessionName(message.content, botName()),
     );
   };
 
@@ -901,12 +1320,12 @@ export default async function plugin(bb: BbPluginApi) {
       paired_at: Date.now(),
     });
     const summary = [
-      "✅ **This server is paired with BB.**",
+      `✅ **This server is paired with BB through ${botName()}.**`,
       `• Server: ${message.guildName ?? "This server"}`,
       `• Authorized user: ${message.authorTag} (${message.authorId})`,
       `• Home channel: ${message.channelName ? `#${message.channelName}` : "This channel"}`,
       "",
-      "Next: mention me in a channel with a request. I’ll open a dedicated conversation thread there.",
+      `Next: mention ${botName()} in a channel with a request. I’ll open a dedicated conversation thread there.`,
     ].join("\n");
     bb.log.info(
       `Discord paired: guild=${message.guildId} user=${message.authorId} channel=${message.channelId}`,
@@ -1079,7 +1498,7 @@ export default async function plugin(bb: BbPluginApi) {
       await sendToDiscord(
         message.guildId,
         session.id,
-        "✅ **BB is working on it.** Keep chatting in this thread — no mention needed.",
+        `✅ **${botName_()} is on it.** Keep chatting in this thread — no mention needed.`,
       );
       await client?.react(
         message.guildId,
@@ -1174,7 +1593,7 @@ export default async function plugin(bb: BbPluginApi) {
     );
     const sessionPosted = await postToThreadChannel(
       thread.id,
-      "BB couldn’t finish that turn. Try your request again here; if it keeps failing, check BB for details.",
+      `${botName_()} couldn’t finish that turn. Try your request again here; if it keeps failing, check BB for details.`,
     );
     const failureHomeChannelId = homeChannelId();
     if (
@@ -1188,8 +1607,8 @@ export default async function plugin(bb: BbPluginApi) {
         map.guild_id,
         failureHomeChannelId!,
         sessionPosted
-          ? `BB couldn’t finish a turn in ${label}. Continue in <#${map.discord_thread_id}> or check BB for details.`
-          : `BB couldn’t finish a turn in ${label}. Open BB for details, then try again.`,
+          ? `${botName_()} couldn’t finish a turn in ${label}. Continue in <#${map.discord_thread_id}> or check BB for details.`
+          : `${botName_()} couldn’t finish a turn in ${label}. Open BB for details, then try again.`,
       );
     }
   });
@@ -1253,6 +1672,8 @@ export default async function plugin(bb: BbPluginApi) {
       const [command = "status", ...rest] = argv;
 
       if (command === "status") {
+        const config = configurationStatus();
+        const execution = await executionStatus();
         const pairing = getPairing();
         const legacyGuild = legacyGuildId();
         const activeGuild = effectiveGuildId();
@@ -1281,8 +1702,12 @@ export default async function plugin(bb: BbPluginApi) {
                 ? "Paired: no — run `bb discord pair`"
                 : "Paired: no — add the bot token in Settings → Plugins → Discord",
             `Authorized users: ${effectiveAllowedUsers().join(", ") || "(none)"}`,
-            `Server access: ${accessLevel()}${cached.allowDestructiveServerActions ? " (destructive actions enabled)" : ""}`,
-            `Thread permission mode: ${cached.permissionMode ?? "accept-edits"}`,
+            `Server access: ${config.serverAccess.value}${config.destructiveActions.effective ? " (destructive actions enabled)" : config.destructiveActions.configured ? " (destructive actions requested but inactive)" : ""}`,
+            `Thread permission mode: ${config.permissionMode.value}`,
+            `Home channel: ${config.homeChannel.label}${config.homeChannel.source === "pairing" ? " (from pairing)" : ""}`,
+            `New conversations: ${config.newConversationChannel.label}`,
+            `Runs in: ${execution.summary}`,
+            ...execution.issues.map((issue) => `⚠️ ${issue}`),
             cached.botToken && !activeGuild
               ? "Pairing: waiting for an explicit `bb discord pair` request (the one-time code is hidden from status)."
               : null,
