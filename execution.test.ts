@@ -268,7 +268,7 @@ test("the view labels automatic values instead of showing blanks", () => {
     resolution: null,
   });
   assert.equal(view.project.source, "default");
-  assert.equal(view.project.label, "Personal (personal)");
+  assert.equal(view.project.label, "Personal");
   assert.equal(view.machine.label, "Wherever the project runs by default");
   assert.equal(view.model.label, "claude-sonnet-5");
   assert.deepEqual(view.issues, []);

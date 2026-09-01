@@ -156,15 +156,15 @@ export function destructiveActionsState(
 /** Human label for the graduated access levels, used in UI and invite copy. */
 export function accessLevelLabel(level: DiscordAccessLevel): string {
   return level === "full"
-    ? "Full — messages plus channel, role and member administration"
-    : "Messages — read and post messages and threads";
+    ? "Full (messages and server administration)"
+    : "Messages and threads";
 }
 
 export const PERMISSION_MODE_LABELS: Record<string, string> = {
-  auto: "Auto — BB asks before anything risky",
-  "accept-edits": "Accept edits — file edits run without asking",
-  full: "Full — no approval prompts",
-  "project-default": "Project default — whatever the project is set to",
+  auto: "Auto (ask before risky actions)",
+  "accept-edits": "Accept edits",
+  full: "Full (no approval prompts)",
+  "project-default": "Project default",
 };
 
 export function permissionModeLabel(mode: string | undefined): string {

@@ -529,9 +529,7 @@ export function buildExecutionView(
 
   const projectField: ExecutionFieldView = {
     label: project
-      ? project.kind === "personal"
-        ? `${project.name} (personal)`
-        : project.name
+      ? project.name
       : selection.projectId ?? "Personal project",
     value: project?.id ?? selection.projectId,
     source: selection.projectId ? "setting" : "default",

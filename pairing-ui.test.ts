@@ -73,7 +73,7 @@ test("pairing-code expiry is visible and becomes actionable", () => {
     status({ pairingCode: { code: "ABC-123", command: "pair ABC-123", expiresAt: 1_000 } }),
     1_000,
   );
-  assert.equal(expired.expiryLabel, "Expired — generate a new code");
+  assert.equal(expired.expiryLabel, "Expired. Generate a new code");
 });
 
 test("a parked configuration failure is distinct from connecting and actionable", () => {

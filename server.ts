@@ -825,17 +825,12 @@ export default async function plugin(bb: BbPluginApi) {
       publishPairingState("pairing-code-created");
       return pairingStatus();
     },
-    /**
-     * Backs the project, machine and model controls. It writes the routing keys
-     * and nothing else, and it re-checks the requested pair against the live
-     * catalog first, because the options the panel rendered can be a minute
-     * stale.
-     */
-    async setExecutionSelection(request) {
+    /** Validates and saves the connected settings form as one configuration. */
+    async setConfiguration(request) {
       const projectId = request.defaultProjectId?.trim() || null;
       const projectResult = await loadProject(projectId);
       if (!projectResult.project) {
-        return pairingStatus("That project is no longer available.");
+        throw new Error("That project is no longer available.");
       }
       const [machines, machine] = [
         await listMachines(),
@@ -851,25 +846,8 @@ export default async function plugin(bb: BbPluginApi) {
       const check = validateSelectionRequest({ request, machines, catalog });
       if (!check.ok) {
         executionCache = null;
-        return pairingStatus(check.message);
+        throw new Error(check.message);
       }
-
-      updateConfig({
-        defaultProjectId: projectId ?? undefined,
-        machineHostId: check.selection.machineHostId ?? undefined,
-        providerId: check.selection.providerId ?? undefined,
-        model: check.selection.model ?? undefined,
-        reasoningLevel: check.selection.reasoningLevel ?? undefined,
-        serviceTier: check.selection.serviceTier ?? undefined,
-      });
-      return pairingStatus(
-        check.notice ??
-          (check.selection.machineHostId || check.selection.model
-            ? "Saved where Discord requests run."
-            : "Discord requests follow the project defaults again."),
-      );
-    },
-    async setConfiguration(request) {
       let homeChannelId: string | null;
       let spawnChannelId: string | null;
       try {
@@ -880,16 +858,22 @@ export default async function plugin(bb: BbPluginApi) {
           request.spawnChannelId ?? undefined,
         );
       } catch (error) {
-        return pairingStatus(`Could not save channels: ${errorMessage(error)}`);
+        throw new Error(`Could not save channels: ${errorMessage(error)}`);
       }
 
       updateConfig({
+        defaultProjectId: projectId ?? undefined,
+        machineHostId: check.selection.machineHostId ?? undefined,
+        providerId: check.selection.providerId ?? undefined,
+        model: check.selection.model ?? undefined,
+        reasoningLevel: check.selection.reasoningLevel ?? undefined,
+        serviceTier: check.selection.serviceTier ?? undefined,
         permissionMode: request.permissionMode,
         serverAccess: request.serverAccess,
         homeChannelId: homeChannelId ?? undefined,
         spawnChannelId: spawnChannelId ?? undefined,
       });
-      return pairingStatus("Discord configuration saved.");
+      return pairingStatus(check.notice ?? "Configuration saved.");
     },
     /**
      * Writes one key and only that key. The reported bug was the destructive
@@ -900,7 +884,7 @@ export default async function plugin(bb: BbPluginApi) {
     async setDestructiveActions({ enabled }) {
       if (enabled && accessLevel() !== "full") {
         return pairingStatus(
-          "Destructive actions need Discord server access set to Full. Change that setting first — it was left as it is.",
+          "Destructive actions need Full server access. Change that setting first.",
         );
       }
       if ((cached.allowDestructiveServerActions === true) === enabled) {

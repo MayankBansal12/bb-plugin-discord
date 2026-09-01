@@ -28,11 +28,11 @@ test("paired installs retain the disconnect control when the gateway fails", () 
   assert.match(app, />Disconnect server<\/Button>/);
 });
 
-test("fields own their labels, use a compact form grid, and actions have independent busy states", () => {
+test("fields own their labels, cap control width, and actions have independent busy states", () => {
   assert.match(app, /<Label id=\{labelId\} htmlFor=\{id\}>\{label\}<\/Label>/);
   assert.match(app, /role="group" aria-labelledby=\{labelId\}/);
-  assert.match(app, /sm:grid-cols-\[minmax\(0,11rem\)_minmax\(0,1fr\)\]/);
-  for (const state of ["savingConfig", "savingRouting", "savingDestructive", "unpairing"]) {
+  assert.match(app, /sm:grid-cols-\[10rem_minmax\(0,22rem\)\]/);
+  for (const state of ["savingConfig", "savingDestructive", "unpairing"]) {
     assert.match(app, new RegExp(`const \\[${state},`));
   }
 });
@@ -45,26 +45,26 @@ test("controls come from reusable UI components and theme tokens", () => {
   assert.doesNotMatch(css, /#[0-9a-f]{3,8}\b|\brgb\(|\boklch\(/i);
 });
 
-test("routing copy explains personal, project-default, and incompatible-machine choices", () => {
+test("routing choices are concise and fold the default into the machine list", () => {
   assert.match(select, /@radix-ui\/react-select/);
   assert.doesNotMatch(select, /<select\b/);
   assert.doesNotMatch(app, /<(?:select|option|optgroup)\b/);
   assert.match(app, /experimental_ProviderModelPicker as ProviderModelPicker/);
-  assert.match(app, /Personal workspace \(no project\)/);
-  assert.match(app, /Project default\$\{defaultMachine/);
-  assert.match(app, /no project checkout/);
-  assert.doesNotMatch(app, /Automatic —/);
+  assert.match(app, /personalProject\?\.name \|\| "Personal"/);
+  assert.match(app, /`\$\{defaultMachine\.name\} \(default\)`/);
+  assert.match(app, /machine\.id !== defaultMachineId/);
+  assert.match(app, /\(no checkout\)/);
+  assert.doesNotMatch(app, /Automatic|—/);
 });
 
-test("provider changes remain a draft until the operator applies them", () => {
+test("routing and model changes are staged for the single configuration save", () => {
   const picker = app.match(/<ProviderModelPicker([\s\S]*?)\n\s*\/>/)?.[1];
   assert.ok(picker);
-  assert.match(picker, /setModelDraft\(value\)/);
-  assert.match(picker, /setModelDirty\(true\)/);
-  assert.doesNotMatch(picker, /\bsave\(/);
-  assert.match(app, /"Apply model"/);
-  assert.match(app, /const applyModel = async/);
-  assert.match(app, /providerId: modelDraft\.providerId/);
+  assert.match(picker, /edit\(\{ modelValue: value, modelPinned: true \}\)/);
+  assert.match(app, /state\.rpc\.call\("setConfiguration"/);
+  assert.match(app, /providerId: draft\.modelPinned/);
+  assert.match(app, />Save configuration<\/Button>/);
+  assert.doesNotMatch(app, /Apply model|setExecutionSelection/);
 });
 
 test("configured tokens render only the server-provided mask", () => {

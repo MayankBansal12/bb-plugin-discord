@@ -142,11 +142,8 @@ export const discordRpcContract = defineRpcContract({
     input: z.null(),
     output: pairingStatusSchema,
   },
-  /**
-   * Writes the four routing keys and nothing else, after checking the project
-   * and the machine/model pair against live BB state. `null` means Automatic.
-   */
-  setExecutionSelection: {
+  /** Saves the connected-state form as one validated configuration. */
+  setConfiguration: {
     input: z.object({
       defaultProjectId: z.string().nullable(),
       machineHostId: z.string().nullable(),
@@ -156,15 +153,6 @@ export const discordRpcContract = defineRpcContract({
         "none", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode",
       ]).nullable(),
       serviceTier: z.enum(["default", "fast"]).nullable(),
-    }).strict(),
-    output: pairingStatusSchema,
-  },
-  /**
-   * Saves the permission and channel preferences edited in the connected-state
-   * panel. Routing lives in `setExecutionSelection`, which validates it.
-   */
-  setConfiguration: {
-    input: z.object({
       permissionMode: z.enum(["auto", "accept-edits", "full", "project-default"]),
       serverAccess: z.enum(["messages", "full"]),
       homeChannelId: z.string().nullable(),

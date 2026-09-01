@@ -49,12 +49,12 @@ export function pairingPanelView(
     serverLabel: pairing?.guildName ?? (pairing ? "Configured server" : "Not paired"),
     userLabel: pairing
       ? `${pairing.userTag ?? "Discord user"} (${pairing.userId})`
-      : "—",
+      : "Not connected",
     expiryLabel:
       secondsRemaining === null
         ? null
         : secondsRemaining === 0
-          ? "Expired — generate a new code"
+          ? "Expired. Generate a new code"
           : `Expires in ${formatDuration(secondsRemaining)}`,
     setupStep: !status.tokenConfigured
       ? "Save your bot token in the field above."

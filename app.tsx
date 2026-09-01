@@ -215,7 +215,7 @@ function TokenSetup({ status, now }: { status: DiscordPairingStatus; now: number
           </CardTitle>
           <CardDescription>
             {verifying
-              ? "The token is saved. Waiting for Discord to accept it — the rest of the setup appears as soon as it does."
+              ? "The token is saved. The rest of setup appears when Discord accepts it."
               : "Create a Discord app, enable Message Content Intent, then paste the bot token in the secure field above and save it. Nothing else needs configuring yet."}
           </CardDescription>
         </CardHeader>
@@ -327,7 +327,7 @@ function Field({ label, description, children }: { label: string; description?: 
   const id = useId();
   const labelId = `${id}-label`;
   return (
-    <div className="grid gap-2 sm:grid-cols-[minmax(0,11rem)_minmax(0,1fr)] sm:items-start sm:gap-4">
+    <div className="grid gap-2 sm:grid-cols-[10rem_minmax(0,22rem)] sm:items-start sm:gap-4">
       <div className="space-y-1">
         <Label id={labelId} htmlFor={id}>{label}</Label>
         {description ? <p className="text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
@@ -369,6 +369,10 @@ function Dropdown({
 }
 
 interface ConfigDraft {
+  defaultProjectId: string;
+  machineHostId: string;
+  modelValue: ExperimentalProviderModelPickerValue | null;
+  modelPinned: boolean;
   permissionMode: "auto" | "accept-edits" | "full" | "project-default";
   serverAccess: "messages" | "full";
   homeChannelId: string;
@@ -377,7 +381,17 @@ interface ConfigDraft {
 
 function draftFrom(status: DiscordPairingStatus): ConfigDraft {
   const { configuration } = status;
+  const projectId = status.execution.project.source === "setting" ? status.execution.project.value ?? "" : "";
+  const activeProject = projectId
+    ? status.execution.projects.find((project) => project.id === projectId)
+    : status.execution.projects.find((project) => project.kind === "personal");
+  const selectedMachineId = status.execution.machine.source === "setting" ? status.execution.machine.value ?? "" : "";
+  const modelValue = pickerValueFromExecution(status.execution);
   return {
+    defaultProjectId: projectId,
+    machineHostId: selectedMachineId === activeProject?.defaultHostId ? "" : selectedMachineId,
+    modelValue,
+    modelPinned: status.execution.model.source === "setting" && modelValue !== null,
     permissionMode: configuration.permissionMode.value as ConfigDraft["permissionMode"],
     serverAccess: configuration.serverAccess.value,
     homeChannelId: configuration.homeChannel.source === "setting" ? configuration.homeChannel.id ?? "" : "",
@@ -405,193 +419,104 @@ function pickerValueFromExecution(
   };
 }
 
-/**
- * Project and machine changes apply immediately because they determine which
- * provider catalog BB can read. Model changes stay as a local draft until the
- * operator applies them, so switching provider tabs cannot disable and close
- * BB's picker midway through catalog resolution.
- */
-function RoutingFields({ state, saving, setSaving }: { state: DiscordStatusState; saving: boolean; setSaving: (saving: boolean) => void }) {
-  const status = state.status!;
+function RoutingFields({
+  status,
+  draft,
+  disabled,
+  edit,
+}: {
+  status: DiscordPairingStatus;
+  draft: ConfigDraft;
+  disabled: boolean;
+  edit: (patch: Partial<ConfigDraft>) => void;
+}) {
   const { execution } = status;
-  const pinned = (field: { source: string; value: string | null }): string =>
-    field.source === "setting" ? field.value ?? "" : "";
-  const selectedProject = pinned(execution.project);
-  const selectedMachine = pinned(execution.machine);
-  const effectivePickerValue = pickerValueFromExecution(execution);
-  const [modelDraft, setModelDraft] = useState<ExperimentalProviderModelPickerValue | null>(
-    effectivePickerValue,
-  );
-  const [modelDirty, setModelDirty] = useState(false);
-
-  useEffect(() => {
-    if (!modelDirty) setModelDraft(effectivePickerValue);
-  }, [
-    modelDirty,
-    execution.resolvedProviderId,
-    execution.model.value,
-    execution.resolvedReasoningLevel,
-    execution.resolvedServiceTier,
-  ]);
-
   const standardProjects = execution.projects.filter((project) => project.kind === "standard");
-  const activeProject = selectedProject
-    ? execution.projects.find((project) => project.id === selectedProject) ?? null
+  const personalProject = execution.projects.find((project) => project.kind === "personal") ?? null;
+  const activeProject = draft.defaultProjectId
+    ? execution.projects.find((project) => project.id === draft.defaultProjectId) ?? null
     : execution.projects.find((project) => project.kind === "personal") ?? null;
-  const defaultMachine = activeProject?.defaultHostId
-    ? execution.machines.find((machine) => machine.id === activeProject.defaultHostId) ?? null
+  const defaultMachineId = activeProject?.defaultHostId ?? (
+    !draft.defaultProjectId && execution.machine.source === "default"
+      ? execution.machine.value
+      : null
+  );
+  const defaultMachine = defaultMachineId
+    ? execution.machines.find((machine) => machine.id === defaultMachineId) ?? null
     : null;
   const machineCanRunProject = (machineId: string): boolean =>
     activeProject?.kind !== "standard" || activeProject.hostIds.includes(machineId);
-
-  const save = async (next: {
-    defaultProjectId: string | null;
-    machineHostId: string | null;
-    providerId: string | null;
-    model: string | null;
-    reasoningLevel: DiscordPairingStatus["execution"]["resolvedReasoningLevel"];
-    serviceTier: DiscordPairingStatus["execution"]["resolvedServiceTier"];
-  }): Promise<DiscordPairingStatus | null> => {
-    setSaving(true);
-    try {
-      const updated = await state.rpc.call("setExecutionSelection", next);
-      state.setStatus(updated);
-      state.setError(null);
-      return updated;
-    } catch {
-      state.setError("That selection could not be saved. Try again.");
-      return null;
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const replaceRoute = async (next: Parameters<typeof save>[0]) => {
-    const updated = await save(next);
-    if (!updated) return;
-    setModelDirty(false);
-    setModelDraft(pickerValueFromExecution(updated.execution));
-  };
-
-  const applyModel = async () => {
-    if (!modelDraft) return;
-    const updated = await save({
-      defaultProjectId: selectedProject || null,
-      machineHostId: selectedMachine || null,
-      providerId: modelDraft.providerId,
-      model: modelDraft.model,
-      reasoningLevel: modelDraft.reasoningLevel,
-      serviceTier: modelDraft.serviceTier ?? null,
-    });
-    if (
-      updated?.execution.model.source === "setting" &&
-      updated.execution.resolvedProviderId === modelDraft.providerId &&
-      updated.execution.model.value === modelDraft.model
-    ) {
-      setModelDirty(false);
-      setModelDraft(pickerValueFromExecution(updated.execution));
-    }
-  };
-
-  const useProjectDefaultModel = async () => {
-    if (execution.model.source !== "setting") {
-      setModelDirty(false);
-      setModelDraft(effectivePickerValue);
-      return;
-    }
-    const updated = await save({
-      defaultProjectId: selectedProject || null,
-      machineHostId: selectedMachine || null,
-      providerId: null,
-      model: null,
-      reasoningLevel: null,
-      serviceTier: null,
-    });
-    if (updated?.execution.model.source === "default") {
-      setModelDirty(false);
-      setModelDraft(pickerValueFromExecution(updated.execution));
-    }
-  };
+  const pickerHostId = draft.machineHostId || defaultMachineId || undefined;
 
   return (
     <>
-      <Field label="Project" description="Choose a bb project for repository work, or use a personal workspace.">
+      <Field label="Project" description="Where new requests open.">
         {(id) => (
           <Dropdown
             id={id}
-            value={selectedProject || AUTOMATIC}
-            disabled={saving}
+            value={draft.defaultProjectId || AUTOMATIC}
+            disabled={disabled}
             options={[
-              { value: AUTOMATIC, label: "Personal workspace (no project)" },
+              { value: AUTOMATIC, label: personalProject?.name || "Personal" },
               ...standardProjects.map((project) => ({ value: project.id, label: project.name })),
             ]}
-            onValueChange={(value) => void replaceRoute({ defaultProjectId: value === AUTOMATIC ? null : value, machineHostId: null, providerId: null, model: null, reasoningLevel: null, serviceTier: null })}
+            onValueChange={(value) => edit({
+              defaultProjectId: value === AUTOMATIC ? "" : value,
+              machineHostId: "",
+              modelPinned: false,
+            })}
           />
         )}
       </Field>
-      <Field label="Machine" description={activeProject?.kind === "standard" ? "Only machines with a checkout for this project can run it." : "Choose a machine, or let bb use its default."}>
+      <Field label="Machine" description={activeProject?.kind === "standard" ? "Machines with this project checked out." : "Where requests run."}>
         {(id) => (
           <Dropdown
             id={id}
-            value={selectedMachine || AUTOMATIC}
-            disabled={saving}
+            value={draft.machineHostId || AUTOMATIC}
+            disabled={disabled}
             options={[
               {
                 value: AUTOMATIC,
-                label: activeProject?.kind === "standard"
-                  ? `Project default${defaultMachine ? ` — ${defaultMachine.name}` : ""}`
-                  : "BB default machine",
+                label: defaultMachine ? `${defaultMachine.name} (default)` : "Default machine",
               },
-              ...execution.machines.map((machine) => {
+              ...execution.machines.filter((machine) => machine.id !== defaultMachineId).map((machine) => {
                 const unavailable = !machineCanRunProject(machine.id);
                 return {
                   value: machine.id,
-                  label: `${machine.name}${unavailable ? " — no project checkout" : machine.status === "connected" ? "" : " — offline"}`,
+                  label: `${machine.name}${unavailable ? " (no checkout)" : machine.status === "connected" ? "" : " (offline)"}`,
                   disabled: unavailable,
                 };
               }),
             ]}
-            onValueChange={(value) => void replaceRoute({ defaultProjectId: selectedProject || null, machineHostId: value === AUTOMATIC ? null : value, providerId: null, model: null, reasoningLevel: null, serviceTier: null })}
+            onValueChange={(value) => edit({
+              machineHostId: value === AUTOMATIC ? "" : value,
+              modelPinned: false,
+            })}
           />
         )}
       </Field>
-      <Field label="Provider and model" description="Choose from providers available on the selected machine, then apply once.">
+      <Field label="Model" description="Uses the project default unless changed.">
         {(_id) => (
           <div className="space-y-2">
-            {modelDraft ? (
+            {draft.modelValue ? (
               <ProviderModelPicker
-                value={modelDraft}
-                routing={execution.machine.value ? { kind: "host", hostId: execution.machine.value } : undefined}
-                disabled={saving}
+                value={draft.modelValue}
+                routing={pickerHostId ? { kind: "host", hostId: pickerHostId } : undefined}
+                disabled={disabled}
                 align="end"
                 className="w-full justify-between"
                 onChange={(value) => {
-                  setModelDraft(value);
-                  setModelDirty(true);
+                  edit({ modelValue: value, modelPinned: true });
                 }}
               />
             ) : <Notice destructive>The model list is unavailable.</Notice>}
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs text-muted-foreground" aria-live="polite">
-                {modelDirty
-                  ? "Provider or model changed — not applied yet"
-                  : execution.model.source === "default"
-                    ? `Using project default — ${execution.model.label}`
-                    : "Applied to new Discord requests"}
-              </span>
-              <div className="flex items-center gap-1">
-                {execution.model.source === "setting" || modelDirty ? (
-                  <Button variant="ghost" size="sm" disabled={saving} onClick={() => void useProjectDefaultModel()}>Use project default</Button>
-                ) : null}
-                <Button size="sm" disabled={saving || !modelDirty || !modelDraft} onClick={() => void applyModel()}>
-                  {saving && modelDirty ? "Applying…" : "Apply model"}
-                </Button>
-              </div>
-            </div>
+            {draft.modelPinned ? (
+              <Button variant="ghost" size="sm" disabled={disabled} onClick={() => edit({ modelPinned: false })}>Use default model</Button>
+            ) : null}
           </div>
         )}
       </Field>
-      {execution.issues.length > 0 ? <Notice destructive>{execution.issues.join(" ")}</Notice> : <p className="text-xs leading-relaxed text-muted-foreground">{saving ? "Updating request routing…" : execution.summary}</p>}
+      {execution.issues.length > 0 ? <Notice destructive>{execution.issues.join(" ")}</Notice> : null}
     </>
   );
 }
@@ -605,16 +530,36 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
   const saved = draftFrom(status);
   const [edits, setEdits] = useState<Partial<ConfigDraft>>({});
   const draft: ConfigDraft = { ...saved, ...edits };
-  const dirty = (Object.keys(edits) as (keyof ConfigDraft)[]).some((key) => draft[key] !== saved[key]);
+  const sameModel = (
+    left: ExperimentalProviderModelPickerValue | null,
+    right: ExperimentalProviderModelPickerValue | null,
+  ) => left?.providerId === right?.providerId &&
+    left?.model === right?.model &&
+    left?.reasoningLevel === right?.reasoningLevel &&
+    left?.serviceTier === right?.serviceTier;
+  const dirty = (
+    [
+      "defaultProjectId",
+      "machineHostId",
+      "modelPinned",
+      "permissionMode",
+      "serverAccess",
+      "homeChannelId",
+      "spawnChannelId",
+    ] as const
+  ).some((key) => draft[key] !== saved[key]) || (
+    draft.modelPinned && !sameModel(draft.modelValue, saved.modelValue)
+  );
   const edit = <K extends keyof ConfigDraft>(key: K, value: ConfigDraft[K]) =>
     setEdits((current) => ({ ...current, [key]: value }));
+  const editMany = (patch: Partial<ConfigDraft>) =>
+    setEdits((current) => ({ ...current, ...patch }));
 
   const [savingConfig, setSavingConfig] = useState(false);
-  const [savingRouting, setSavingRouting] = useState(false);
   const [savingDestructive, setSavingDestructive] = useState(false);
   const [unpairing, setUnpairing] = useState(false);
   const [confirmingUnpair, setConfirmingUnpair] = useState(false);
-  const busy = savingConfig || savingRouting || savingDestructive || unpairing;
+  const busy = savingConfig || savingDestructive || unpairing;
 
   const run = async (
     setBusy: (value: boolean) => void,
@@ -638,6 +583,12 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
     run(
       setSavingConfig,
       () => state.rpc.call("setConfiguration", {
+        defaultProjectId: draft.defaultProjectId || null,
+        machineHostId: draft.machineHostId || null,
+        providerId: draft.modelPinned ? draft.modelValue?.providerId ?? null : null,
+        model: draft.modelPinned ? draft.modelValue?.model ?? null : null,
+        reasoningLevel: draft.modelPinned ? draft.modelValue?.reasoningLevel ?? null : null,
+        serviceTier: draft.modelPinned ? draft.modelValue?.serviceTier ?? null : null,
         permissionMode: draft.permissionMode,
         serverAccess: draft.serverAccess,
         homeChannelId: draft.homeChannelId || null,
@@ -706,30 +657,29 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Where requests run</CardTitle>
-          <CardDescription>Choose where Discord requests open in bb.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <RoutingFields state={state} saving={savingRouting} setSaving={setSavingRouting} />
+          <RoutingFields status={status} draft={draft} disabled={busy} edit={editMany} />
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Permissions</CardTitle>
-          <CardDescription>Control what Discord-started agents can do in bb and in the paired server.</CardDescription>
+          <CardDescription>Control agent and Discord access.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
           <Field label="bb permission mode" description="Auto asks before risky actions.">
             {(id) => (
               <Dropdown id={id} value={draft.permissionMode} disabled={busy} onValueChange={(value) => edit("permissionMode", value as ConfigDraft["permissionMode"])} options={[
-                { value: "auto", label: "Auto — ask before risky actions" },
+                { value: "auto", label: "Auto (ask before risky actions)" },
                 { value: "accept-edits", label: "Accept edits" },
                 { value: "full", label: "Full" },
                 { value: "project-default", label: "Project default" },
               ]} />
             )}
           </Field>
-          <Field label="Discord server access" description="Messages is enough for conversations. Full adds server administration tools and may require inviting the bot again.">
+          <Field label="Discord access" description="Full adds server administration tools.">
             {(id) => (
               <Dropdown id={id} value={draft.serverAccess} disabled={busy} onValueChange={(value) => edit("serverAccess", value as ConfigDraft["serverAccess"])} options={[
                 { value: "messages", label: "Messages only" },
@@ -737,7 +687,7 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
               ]} />
             )}
           </Field>
-          <Field label="Destructive server actions" description={status.configuration.serverAccess.value === "full" ? "Allow deleting channels and moderating members. This toggle applies immediately and never changes server access." : "Save Full server access first. Changing this never raises access automatically."}>
+          <Field label="Destructive actions" description={status.configuration.serverAccess.value === "full" ? "Allow channel deletion and member moderation. Applies immediately." : "Save Full access first."}>
             {(id) => (
               <div className="flex min-h-9 items-center justify-between rounded-md border border-border px-3">
                 <span className="text-sm text-muted-foreground">{status.configuration.destructiveActions.effective ? "Allowed" : "Not allowed"}</span>
@@ -752,13 +702,12 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Channels</CardTitle>
-          <CardDescription>Optional channel overrides.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
-          <Field label="Status and alerts" description={`Empty uses ${status.configuration.homeChannel.label} from pairing.`}>
+          <Field label="Status and alerts" description={`Default: ${status.configuration.homeChannel.label}`}>
             {(id) => <Input id={id} inputMode="numeric" value={draft.homeChannelId} disabled={busy} placeholder="Channel ID from pairing" onChange={(event) => edit("homeChannelId", event.target.value)} />}
           </Field>
-          <Field label="New conversations" description="Empty allows mentions in any channel in the paired server.">
+          <Field label="New conversations" description="Default: any channel">
             {(id) => <Input id={id} inputMode="numeric" value={draft.spawnChannelId} disabled={busy} placeholder="Any channel" onChange={(event) => edit("spawnChannelId", event.target.value)} />}
           </Field>
         </CardContent>
@@ -766,7 +715,7 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
 
       <div className="flex items-center justify-end gap-3">
         <span className="text-xs text-muted-foreground" aria-live="polite">
-          {savingConfig ? "Saving…" : dirty ? "Unsaved changes" : "Changes apply to new Discord requests."}
+          {savingConfig ? "Saving…" : dirty ? "Unsaved changes" : "Saved"}
         </span>
         <Button disabled={busy || !dirty} onClick={() => void saveConfiguration()}>Save configuration</Button>
       </div>

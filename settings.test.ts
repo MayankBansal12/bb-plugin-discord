@@ -56,8 +56,8 @@ test("the destructive-actions handler writes exactly one config value", () => {
   assert.match(handler, /accessLevel\(\) !== "full"/);
 });
 
-test("execution selection validates and writes one coherent routing choice", () => {
-  const handler = rpcHandler("setExecutionSelection");
+test("configuration validates and writes one coherent settings choice", () => {
+  const handler = rpcHandler("setConfiguration");
   assert.match(handler, /validateSelectionRequest\(/);
   assert.match(handler, /if \(!check\.ok\)/);
   const patch = handler.match(/updateConfig\(\{([\s\S]*?)\n      \}\);/)?.[1];
@@ -67,7 +67,18 @@ test("execution selection validates and writes one coherent routing choice", () 
       .split("\n")
       .map((line) => line.trim().split(":")[0])
       .filter(Boolean),
-    ["defaultProjectId", "machineHostId", "providerId", "model", "reasoningLevel", "serviceTier"],
+    [
+      "defaultProjectId",
+      "machineHostId",
+      "providerId",
+      "model",
+      "reasoningLevel",
+      "serviceTier",
+      "permissionMode",
+      "serverAccess",
+      "homeChannelId",
+      "spawnChannelId",
+    ],
   );
   assert.match(
     handler,
@@ -82,10 +93,10 @@ test("model catalogs are loaded for the selected provider", () => {
   assert.match(serverSource, /selectedProviderId \?\? context\.defaults\?\.providerId/);
 });
 
-test("the connected configuration handler cannot change token or execution pins", () => {
+test("the connected configuration handler cannot change token or destructive access", () => {
   const handler = rpcHandler("setConfiguration");
   assert.match(handler, /normalizeOptionalDiscordSnowflake/);
-  for (const key of ["botToken", "machineHostId", "providerId", "model", "reasoningLevel", "serviceTier", "allowDestructiveServerActions"]) {
+  for (const key of ["botToken", "allowDestructiveServerActions"]) {
     assert.doesNotMatch(handler, new RegExp(`${key}\\s*:`));
   }
 });
