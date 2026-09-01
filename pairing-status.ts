@@ -1,5 +1,10 @@
-import type { DiscordPairingStatus } from "./contract.js";
+import type {
+  DiscordConfigurationStatus,
+  DiscordExecutionStatus,
+  DiscordPairingStatus,
+} from "./contract.js";
 import { formatPairingCode, type PendingPairingCode } from "./pairing.js";
+import { botDisplayName } from "./config-view.js";
 
 export interface StoredPairingStatus {
   guildId: string;
@@ -18,9 +23,10 @@ export interface PairingStatusInput {
   botTag: string | null;
   tokenConfigured: boolean;
   storedPairing: StoredPairingStatus | null;
-  legacyGuildId: string | null;
   pairingCode: PendingPairingCode | null;
   inviteUrl: string | null;
+  configuration: DiscordConfigurationStatus;
+  execution: DiscordExecutionStatus;
   notice?: string | null;
 }
 
@@ -35,7 +41,6 @@ export function pairingCommand(
 export function buildPairingStatus(
   input: PairingStatusInput,
 ): DiscordPairingStatus {
-  const activeGuildId = input.storedPairing?.guildId ?? input.legacyGuildId;
   const formattedCode = input.pairingCode
     ? formatPairingCode(input.pairingCode.code)
     : null;
@@ -46,11 +51,11 @@ export function buildPairingStatus(
       botTag: input.botTag,
       message: input.gatewayMessage,
     },
+    botName: botDisplayName(input.botTag),
     tokenConfigured: input.tokenConfigured,
-    paired: activeGuildId !== null,
+    paired: input.storedPairing !== null,
     pairing: input.storedPairing
       ? {
-          source: "pairing",
           guildId: input.storedPairing.guildId,
           guildName: input.storedPairing.guildName,
           channelId: input.storedPairing.channelId,
@@ -59,18 +64,7 @@ export function buildPairingStatus(
           userTag: input.storedPairing.userTag,
           pairedAt: input.storedPairing.pairedAt,
         }
-      : input.legacyGuildId
-        ? {
-            source: "legacy-settings",
-            guildId: input.legacyGuildId,
-            guildName: null,
-            channelId: null,
-            channelName: null,
-            userId: null,
-            userTag: null,
-            pairedAt: null,
-          }
-        : null,
+      : null,
     pairingCode:
       input.pairingCode && formattedCode
         ? {
@@ -80,7 +74,8 @@ export function buildPairingStatus(
           }
         : null,
     inviteUrl: input.inviteUrl,
-    legacySettingsRequireCleanup: input.legacyGuildId !== null,
     notice: input.notice ?? null,
+    configuration: input.configuration,
+    execution: input.execution,
   };
 }

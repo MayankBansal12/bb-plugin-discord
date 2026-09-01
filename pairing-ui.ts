@@ -1,10 +1,18 @@
 import type { DiscordPairingStatus } from "./contract.js";
 
+/** Where the Discord Developer Portal actually puts each thing we ask for. */
+export const DISCORD_DEVELOPER_LINKS = {
+  applications: "https://discord.com/developers/applications",
+  botDocs:
+    "https://discord.com/developers/docs/quick-start/getting-started#step-1-creating-an-app",
+  intentsDocs:
+    "https://discord.com/developers/docs/events/gateway#message-content-intent",
+} as const;
+
 export interface PairingPanelView {
   connectionLabel: string;
   connectionDetail: string;
   serverLabel: string;
-  channelLabel: string;
   userLabel: string;
   expiryLabel: string | null;
   setupStep: string;
@@ -39,25 +47,14 @@ export function pairingPanelView(
           ? "Trying to connect to Discord"
           : "Add a bot token above to connect"),
     serverLabel: pairing?.guildName ?? (pairing ? "Configured server" : "Not paired"),
-    channelLabel: pairing
-      ? pairing.channelName
-        ? `#${pairing.channelName}`
-        : pairing.source === "legacy-settings"
-          ? "Set by advanced settings"
-          : "Paired channel"
-      : "—",
     userLabel: pairing
-      ? pairing.userId
-        ? `${pairing.userTag ?? "Discord user"} (${pairing.userId})`
-        : pairing.source === "legacy-settings"
-          ? "Set by advanced settings"
-          : "Pairing owner"
-      : "—",
+      ? `${pairing.userTag ?? "Discord user"} (${pairing.userId})`
+      : "Not connected",
     expiryLabel:
       secondsRemaining === null
         ? null
         : secondsRemaining === 0
-          ? "Expired — generate a new code"
+          ? "Expired. Generate a new code"
           : `Expires in ${formatDuration(secondsRemaining)}`,
     setupStep: !status.tokenConfigured
       ? "Save your bot token in the field above."

@@ -297,10 +297,17 @@ export function routeDiscordMessage(
     : { kind: "ignore" };
 }
 
-/** A compact Discord-native title; never leaks BB's internal thread id. */
-export function discordSessionName(request: string): string {
+/**
+ * A compact Discord-native title; never leaks BB's internal thread id. The
+ * fallback is the bot's own name so an empty request does not produce a thread
+ * named after a product nobody in the server recognizes.
+ */
+export function discordSessionName(
+  request: string,
+  botName = "BB",
+): string {
   const compact = request.replace(/\s+/g, " ").trim();
-  return truncate(compact || "BB conversation", 100);
+  return truncate(compact || `${botName} conversation`, 100);
 }
 
 export function resolveInteractionReply(

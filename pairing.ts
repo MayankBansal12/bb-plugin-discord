@@ -98,22 +98,6 @@ export function clearStoredPairingState(db: PairingStateDatabase): void {
   })();
 }
 
-/** Legacy authorization is active only when both legacy settings are present. */
-export function legacyAuthorizationGuildId(
-  configuredGuildId: string | undefined,
-  configuredAllowedUserIds: readonly string[],
-): string | null {
-  const guildId = configuredGuildId?.trim();
-  return guildId && configuredAllowedUserIds.length > 0 ? guildId : null;
-}
-
-export function resolveEffectiveGuildId(
-  pairedGuildId: string | undefined,
-  legacyGuildId: string | null,
-): string | null {
-  return pairedGuildId ?? legacyGuildId;
-}
-
 /** Lifecycle output is valid only for a mapping in the currently authorized guild. */
 export function isActiveMappedGuild(
   mappedGuildId: string,

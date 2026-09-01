@@ -10,17 +10,18 @@ Pair the bot from BB's UI—no terminal or Discord IDs required.
 
 1. In the [Discord Developer Portal](https://discord.com/developers/applications), create an application and bot.
 2. On the Bot page, copy/reset the token and enable **Message Content Intent**. **Server Members Intent** is optional — enable it on the application only if you want member listing. The bridge uses Discord's REST member-list endpoint and does not request member events in its gateway connection.
-3. Open BB → Settings → Plugins → Discord and paste the token.
+3. Open BB → Settings → Plugins → Discord, paste the token, and save it. The
+   token is the only setting shown until BB verifies the bot.
 
 ### 2. Pair from BB
 
-The **Discord connection** panel shows the gateway state and bot name, then walks you through the rest:
+After verification, the **Discord setup** panel shows the bot identity and walks you through the rest:
 
 1. Select **Open Discord invite** and add the bot to your server.
 2. Copy the pairing command shown in BB.
 3. Send that command in the Discord channel you want to use.
 
-The code is single-use and expires after ten minutes. The panel updates as soon as Discord accepts it, showing the paired server, home channel, and authorized user. It also provides a confirmation-backed unpair action.
+The code is single-use and expires after ten minutes. The panel updates as soon as Discord accepts it, showing one compact connection summary followed by the configuration controls. It also provides a confirmation-backed disconnect action.
 
 The default `messages` invite includes **Create Public Threads** and **Send Messages in Threads**, which the session model requires. If the bot was invited before those permissions were added to its role, open the invite link again after saving the desired access level.
 
@@ -52,7 +53,7 @@ bb discord allow <id> # authorize another Discord user
 bb discord unpair     # forget the server and every allowed user
 ```
 
-`bb discord status` reports that pairing is pending but deliberately omits the live code. Use the explicit `bb discord pair` operator command to reveal it. If you previously configured the advanced guild and user ID settings, the UI and CLI unpair actions clear plugin-owned users and conversation mappings but cannot edit those settings; both surfaces tell you which fields to clear to finish revoking access.
+`bb discord status` reports that pairing is pending but deliberately omits the live code. Use the explicit `bb discord pair` operator command to reveal it. Existing non-secret preferences are migrated into the plugin-owned configuration row during a live upgrade.
 
 ## Security boundary
 
@@ -61,26 +62,58 @@ This plugin can start agent work on the machine that runs BB. Treat access like 
 - Pairing requires a code that only appears inside BB.
 - Only the paired guild is accepted; only paired and explicitly allowed users can drive BB.
 - New conversations require an explicit bot mention.
-- Discord-started BB threads run in `accept-edits`, BB's least privileged permission mode, unless you choose otherwise.
-- The bot token is a secret setting stored in BB's permission-restricted plugin secrets directory and is never exposed to the frontend.
+- Discord-started BB threads run in `auto` — BB checks in before anything risky — unless you choose otherwise. A machine whose permission ceiling is lower lowers the thread further.
+- The bot token is a secret setting stored in BB's permission-restricted plugin secrets directory. The frontend receives only a fixed mask and its final four characters for rotation recognition.
 - Prompts are capped at 8,000 characters and Discord message IDs are deduplicated.
 - Discord-started threads use your personal project unless you pick a default project. There is deliberately no "first available project" fallback.
 
-## Settings
+## Configuration
+
+The host-rendered BB settings form contains only the bot token, because it
+belongs in BB's secret store. Once the token is verified and a server is
+paired, the same page reveals one configuration surface for the remaining
+preferences—there is no second read-only copy of the values and no raw machine,
+provider, guild, or user ID field to keep in sync.
 
 | Setting | Required | Purpose |
 |---|---:|---|
 | Discord bot token | Yes | Gateway authentication; stored as a secret. Everything else is discovered or optional. |
-| Default BB project | No | Project for Discord-started threads. Defaults to your personal project. |
-| Permission mode for Discord threads | No | Defaults to `accept-edits`. `project-default` inherits the project's mode. |
+| Permission mode for Discord threads | No | Defaults to `auto`. `project-default` inherits the project's mode. |
 | Discord server access | No | `messages` (default) or `full`. See below. |
-| Allow destructive server actions | No | Off by default. Needed for deleting channels and kicking/banning/timing out members. |
-| Restrict new conversations to a channel | No | Empty means the bot works anywhere in the paired server. |
-| Home channel ID | No | Status and failure alerts. Defaults to the channel you paired in. |
-| Advanced: server (guild) ID | No | Pin a server by hand instead of pairing. |
-| Advanced: additional Discord user IDs | No | Extra allowlist entries; `bb discord allow` is easier. |
+| Allow destructive server actions | No | Off by default, and inert until server access is `full`. Changing it never changes server access. |
+| Project for Discord threads | No | Which checkout the agent gets. Defaults to your personal project. |
+| Machine for Discord threads | No | Which enrolled machine runs the thread. Choose it from the **Machine** list in Discord setup rather than typing an id. Empty follows the project default. |
+| Model for Discord threads | No | Choose it from the **Model** list in Discord setup, which offers only what the selected machine can serve. Empty uses the project's default model. |
+| Only start conversations in this channel | No | Empty means the bot can open new conversations anywhere in the paired server. Existing conversation threads always keep working. |
+| Home channel for status and alerts | No | Empty sends them to the channel the pairing command ran in. Discord setup shows which channel that is. |
+| Additional authorized users | No | Add or remove these with `bb discord allow <id>` and `bb discord revoke <id>`. The person who pairs is always authorized. |
 
-Provider and model are intentionally absent: Discord threads inherit the project's execution defaults, so there is nothing here to drift out of sync.
+### Where Discord requests run
+
+Project, machine and model are one decision, not three. The project decides the
+checkout, the machine decides the computer, and **the model catalog belongs to
+the machine** — a provider signed in on your laptop is not signed in on a build
+box. So a saved model can stop being valid without this form changing.
+
+Pick the machine and model from the two lists in **Settings → Plugins → Discord**.
+Both offer *Automatic — project default* alongside your live
+machines and the models that machine's signed-in providers actually report, so
+there is no id to type and no invalid pair to choose. Changing the machine
+resets the model to Automatic, because the model list belongs to the machine;
+the panel says so rather than silently picking a different model for you. The
+server re-checks whatever the panel posts against the catalog it just read, so a
+list that went stale between render and click is refused rather than saved.
+
+Resolution happens again on every Discord request rather than trusting what was
+saved. A pinned model the machine cannot serve, **a project-default model that
+machine does not offer**, an offline machine, or a project with no checkout
+there is refused with a message naming what to change — never quietly swapped
+for something else. Discord setup runs the same check continuously, so
+a combination that has gone stale shows up there before a Discord request hits
+it.
+
+Leave all three empty and behaviour is unchanged: the personal project, the
+project's default host, and the project's default provider and model.
 
 ## Usage
 
