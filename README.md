@@ -61,7 +61,7 @@ This plugin can start agent work on the machine that runs BB. Treat access like 
 - Pairing requires a code that only appears inside BB.
 - Only the paired guild is accepted; only paired and explicitly allowed users can drive BB.
 - New conversations require an explicit bot mention.
-- Discord-started BB threads run in `accept-edits`, BB's least privileged permission mode, unless you choose otherwise.
+- Discord-started BB threads run in `auto` by default: BB keeps workspace sandboxing while reviewing routine actions automatically. Choose `accept-edits` for user review of every escalation or `full` to bypass sandboxing and approval prompts.
 - The bot token is a secret setting stored in BB's permission-restricted plugin secrets directory and is never exposed to the frontend.
 - Prompts are capped at 8,000 characters and Discord message IDs are deduplicated.
 - Discord-started threads use your personal project unless you pick a default project. There is deliberately no "first available project" fallback.
@@ -72,7 +72,7 @@ This plugin can start agent work on the machine that runs BB. Treat access like 
 |---|---:|---|
 | Discord bot token | Yes | Gateway authentication; stored as a secret. Everything else is discovered or optional. |
 | Default BB project | No | Project for Discord-started threads. Defaults to your personal project. |
-| Permission mode for Discord threads | No | Defaults to `accept-edits`. `project-default` inherits the project's mode. |
+| Permission mode for Discord threads | No | Defaults to `auto`, which produces fewer human prompts while retaining workspace sandboxing. `accept-edits` asks the user; `full` bypasses prompts and sandboxing; `project-default` inherits the project's mode. |
 | Discord server access | No | `messages` (default) or `full`. See below. |
 | Allow destructive server actions | No | Off by default. Needed for deleting channels and kicking/banning/timing out members. |
 | Restrict new conversations to a channel | No | Empty means the bot works anywhere in the paired server. |
@@ -103,7 +103,10 @@ When BB asks one question, reply normally. For several questions, reply with num
 2: run the full suite
 ```
 
-For approvals, reply with one of:
+Approval requests include Discord buttons for every decision BB offers. Choose
+**Approve once**, **Allow for session**, or **Deny** without typing. Allow for
+session grants only the requested permission for the current BB provider
+session; it is not unrestricted Full access. Text replies remain as a fallback:
 
 ```text
 approve
@@ -111,7 +114,10 @@ approve session
 deny
 ```
 
-Only decisions offered by BB are accepted. If several interactions are pending simultaneously, the bot asks you to resolve them in BB to avoid ambiguity.
+Only decisions offered by BB are shown and accepted. Buttons target one exact
+request, so several simultaneous approvals can be handled independently. Plain
+text replies remain intentionally ambiguous when several requests are pending;
+the bot asks you to use the buttons or open BB.
 
 ## Controlling the Discord server from BB
 

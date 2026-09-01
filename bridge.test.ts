@@ -4,6 +4,7 @@ import {
   ActiveThreadWatcher,
   detachUnavailableSession,
   describePendingInteraction,
+  discordApprovalActionId,
   discordSessionName,
   isAllowedSpawnLocation,
   normalizeOptionalDiscordSnowflake,
@@ -11,12 +12,33 @@ import {
   parseDiscordIds,
   pendingInteractionPrompt,
   pendingInteractionReplyInstructions,
+  parseDiscordApprovalActionId,
   InteractionAnnouncementGuard,
   routeDiscordMessage,
   routeCreatesSession,
   resolveInteractionReply,
+  resolveApprovalDecision,
   shouldAlertHomeForFailure,
 } from "./bridge.js";
+
+test("Discord approval component ids round-trip and reject foreign input", () => {
+  const token = "0123456789abcdef01234567";
+  const customId = discordApprovalActionId(token, "allow_for_session");
+  assert.equal(customId.length < 100, true);
+  assert.deepEqual(parseDiscordApprovalActionId(customId), {
+    token,
+    decision: "allow_for_session",
+  });
+  assert.equal(parseDiscordApprovalActionId("another-plugin:button"), null);
+  assert.equal(
+    parseDiscordApprovalActionId(`bb-approval:v1:${token}:full`),
+    null,
+  );
+  assert.throws(
+    () => discordApprovalActionId("raw-BB-interaction-id", "allow_once"),
+    /Invalid Discord approval action token/,
+  );
+});
 import {
   DiscordChannelBoundaryError,
   isUnavailableDiscordChannelError,
@@ -446,6 +468,33 @@ test("approval replies produce a supported BB resolution", () => {
     kind: "resolve",
     resolution: { decision: "deny" },
   });
+});
+
+test("Discord approval buttons can resolve only decisions BB offered", () => {
+  const interaction = {
+    id: "i-buttons",
+    status: "pending",
+    payload: {
+      kind: "approval" as const,
+      availableDecisions: ["allow_once", "deny"] as Array<
+        "allow_once" | "allow_for_session" | "deny"
+      >,
+      reason: "Write the file",
+    },
+  };
+
+  assert.deepEqual(resolveApprovalDecision(interaction, "allow_once"), {
+    kind: "resolve",
+    resolution: { decision: "allow_once", grantedPermissions: null },
+  });
+  assert.deepEqual(resolveApprovalDecision(interaction, "deny"), {
+    kind: "resolve",
+    resolution: { decision: "deny" },
+  });
+  assert.equal(
+    resolveApprovalDecision(interaction, "allow_for_session").kind,
+    "error",
+  );
 });
 
 test("approval copy offers only decisions supported by the interaction", () => {

@@ -18,7 +18,7 @@ export type DiscordInboundRoute =
 
 export interface ApprovalPayload {
   kind: "approval";
-  availableDecisions: Array<"allow_once" | "allow_for_session" | "deny">;
+  availableDecisions: ApprovalDecision[];
   reason: string | null;
   subject?: {
     kind?: string;
@@ -26,6 +26,13 @@ export interface ApprovalPayload {
     plan?: string;
     tool?: string;
   };
+}
+
+export type ApprovalDecision = "allow_once" | "allow_for_session" | "deny";
+
+export interface DiscordApprovalAction {
+  token: string;
+  decision: ApprovalDecision;
 }
 
 export interface UserQuestionPayload {
@@ -85,6 +92,40 @@ const APPROVAL_REPLY_BY_DECISION = {
   allow_for_session: "`approve session`",
   deny: "`deny`",
 } as const satisfies Record<ApprovalPayload["availableDecisions"][number], string>;
+
+const APPROVAL_ACTION_PREFIX = "bb-approval:v1";
+const APPROVAL_ACTION_TOKEN = /^[a-f0-9]{24}$/;
+
+/** Compact, versioned custom id for Discord buttons (Discord caps it at 100 chars). */
+export function discordApprovalActionId(
+  token: string,
+  decision: ApprovalDecision,
+): string {
+  if (!APPROVAL_ACTION_TOKEN.test(token)) {
+    throw new Error("Invalid Discord approval action token.");
+  }
+  return `${APPROVAL_ACTION_PREFIX}:${token}:${decision}`;
+}
+
+/** Ignore every component id not owned by this bridge, including future versions. */
+export function parseDiscordApprovalActionId(
+  customId: string,
+): DiscordApprovalAction | null {
+  const [prefix, version, token, decision, extra] = customId.split(":");
+  if (
+    prefix !== "bb-approval" ||
+    version !== "v1" ||
+    extra !== undefined ||
+    !token ||
+    !APPROVAL_ACTION_TOKEN.test(token) ||
+    (decision !== "allow_once" &&
+      decision !== "allow_for_session" &&
+      decision !== "deny")
+  ) {
+    return null;
+  }
+  return { token, decision };
+}
 
 /**
  * One bounded timer for every mapped BB thread that is currently working.
@@ -313,28 +354,13 @@ export function resolveInteractionReply(
 
   if (payload.kind === "approval" && "availableDecisions" in payload) {
     if (["approve", "allow", "yes", "approve once"].includes(normalized)) {
-      if (!payload.availableDecisions.includes("allow_once")) {
-        return { kind: "error", message: pendingInteractionPrompt(interaction) };
-      }
-      return {
-        kind: "resolve",
-        resolution: { decision: "allow_once", grantedPermissions: null },
-      };
+      return resolveApprovalDecision(interaction, "allow_once");
     }
     if (["approve session", "allow session", "always"].includes(normalized)) {
-      if (!payload.availableDecisions.includes("allow_for_session")) {
-        return { kind: "error", message: pendingInteractionPrompt(interaction) };
-      }
-      return {
-        kind: "resolve",
-        resolution: { decision: "allow_for_session", grantedPermissions: null },
-      };
+      return resolveApprovalDecision(interaction, "allow_for_session");
     }
     if (["deny", "no", "reject"].includes(normalized)) {
-      if (!payload.availableDecisions.includes("deny")) {
-        return { kind: "error", message: pendingInteractionPrompt(interaction) };
-      }
-      return { kind: "resolve", resolution: { decision: "deny" } };
+      return resolveApprovalDecision(interaction, "deny");
     }
     return {
       kind: "error",
@@ -396,6 +422,28 @@ export function resolveInteractionReply(
   return {
     kind: "resolve",
     resolution: { kind: "request_answer", value: text },
+  };
+}
+
+/** Resolve exactly one decision advertised by BB; shared by text and buttons. */
+export function resolveApprovalDecision(
+  interaction: PendingInteractionLike,
+  decision: ApprovalDecision,
+): InteractionResolution {
+  const payload = interaction.payload;
+  if (
+    payload.kind !== "approval" ||
+    !("availableDecisions" in payload) ||
+    !payload.availableDecisions.includes(decision)
+  ) {
+    return { kind: "error", message: pendingInteractionPrompt(interaction) };
+  }
+  if (decision === "deny") {
+    return { kind: "resolve", resolution: { decision: "deny" } };
+  }
+  return {
+    kind: "resolve",
+    resolution: { decision, grantedPermissions: null },
   };
 }
 

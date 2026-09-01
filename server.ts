@@ -1,5 +1,6 @@
 // bb-plugin-discord — drive BB agent threads from a paired Discord server.
 
+import { createHash } from "node:crypto";
 import type { BbPluginApi } from "@bb/plugin-sdk";
 import {
   ActiveThreadWatcher,
@@ -13,13 +14,17 @@ import {
   pendingInteractionPrompt,
   routeDiscordMessage,
   routeCreatesSession,
+  resolveApprovalDecision,
   resolveInteractionReply,
   shouldAlertHomeForFailure,
+  type ApprovalDecision,
   type PendingInteractionLike,
 } from "./bridge.js";
 import {
   DiscordClient,
   isUnavailableDiscordChannelError,
+  type DiscordApprovalActionResult,
+  type DiscordInboundApprovalAction,
   type DiscordInboundMessage,
 } from "./discord.js";
 import {
@@ -99,6 +104,19 @@ const migrations = [
     added_at INTEGER NOT NULL
   )`,
   `ALTER TABLE discord_threads ADD COLUMN discord_parent_channel_id TEXT`,
+  `CREATE TABLE IF NOT EXISTS discord_interaction_actions (
+    token TEXT PRIMARY KEY,
+    bb_thread_id TEXT NOT NULL,
+    interaction_id TEXT NOT NULL,
+    discord_channel_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    decision TEXT,
+    resolved_by_user_id TEXT,
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER
+  )`,
+  `CREATE INDEX IF NOT EXISTS discord_interaction_actions_thread_idx
+    ON discord_interaction_actions(bb_thread_id, interaction_id)`,
 ];
 
 interface ThreadMapRow {
@@ -124,6 +142,14 @@ interface PairingRow {
   paired_at: number;
 }
 
+interface InteractionActionRow {
+  token: string;
+  bb_thread_id: string;
+  interaction_id: string;
+  discord_channel_id: string;
+  status: string;
+}
+
 export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, migrations);
@@ -146,9 +172,9 @@ export default async function plugin(bb: BbPluginApi) {
       type: "select",
       label: "Permission mode for Discord threads",
       options: ["accept-edits", "auto", "full", "project-default"],
-      default: "accept-edits",
+      default: "auto",
       description:
-        "Discord is the least trusted input BB takes, so threads started from it run in the least privileged mode by default.",
+        "Auto keeps BB's workspace sandbox while reviewing routine actions automatically. Accept edits sends more approval prompts; Full bypasses the sandbox and prompts.",
     },
     serverAccess: {
       type: "select",
@@ -531,6 +557,45 @@ export default async function plugin(bb: BbPluginApi) {
     ).run(bbThreadId, interactionId, Date.now());
   };
 
+  const approvalToken = (bbThreadId: string, interactionId: string): string =>
+    createHash("sha256")
+      .update(bbThreadId)
+      .update("\0")
+      .update(interactionId)
+      .digest("hex")
+      .slice(0, 24);
+
+  const registerApprovalAction = (
+    token: string,
+    bbThreadId: string,
+    interactionId: string,
+    discordChannelId: string,
+  ): void => {
+    db.prepare(
+      `INSERT OR IGNORE INTO discord_interaction_actions
+        (token, bb_thread_id, interaction_id, discord_channel_id, status, created_at)
+       VALUES (?, ?, ?, ?, 'pending', ?)`,
+    ).run(token, bbThreadId, interactionId, discordChannelId, Date.now());
+  };
+
+  const getApprovalAction = (token: string): InteractionActionRow | undefined =>
+    db
+      .prepare("SELECT * FROM discord_interaction_actions WHERE token = ?")
+      .get(token) as InteractionActionRow | undefined;
+
+  const finishApprovalAction = (
+    token: string,
+    status: "resolved" | "stale",
+    decision?: ApprovalDecision,
+    userId?: string,
+  ): void => {
+    db.prepare(
+      `UPDATE discord_interaction_actions
+       SET status = ?, decision = ?, resolved_by_user_id = ?, resolved_at = ?
+       WHERE token = ? AND status = 'pending'`,
+    ).run(status, decision ?? null, userId ?? null, Date.now(), token);
+  };
+
   const removeThreadState = (bbThreadId: string): void => {
     const remove = db.transaction(() => {
       db.prepare("DELETE FROM discord_threads WHERE bb_thread_id = ?").run(
@@ -541,6 +606,9 @@ export default async function plugin(bb: BbPluginApi) {
       );
       db.prepare(
         "DELETE FROM discord_posted_interactions WHERE bb_thread_id = ?",
+      ).run(bbThreadId);
+      db.prepare(
+        "DELETE FROM discord_interaction_actions WHERE bb_thread_id = ?",
       ).run(bbThreadId);
     });
     remove();
@@ -592,6 +660,7 @@ export default async function plugin(bb: BbPluginApi) {
   const postInteractionToThreadChannel = async (
     bbThreadId: string,
     text: string,
+    interaction: PendingInteractionLike,
   ): Promise<boolean> => {
     const map = getMapByBbThread(bbThreadId);
     if (
@@ -604,7 +673,26 @@ export default async function plugin(bb: BbPluginApi) {
     // Unlike ordinary lifecycle output, let this failure reach the watcher.
     // A transient failure is retried on its next tick; a missing session is
     // detached by the watcher's permanent-channel error policy.
-    await client.sendMessage(map.guild_id, map.discord_thread_id, text);
+    const payload = interaction.payload;
+    if (
+      payload.kind === "approval" &&
+      "availableDecisions" in payload &&
+      payload.availableDecisions.length > 0
+    ) {
+      const token = approvalToken(bbThreadId, interaction.id);
+      registerApprovalAction(
+        token,
+        bbThreadId,
+        interaction.id,
+        map.discord_thread_id,
+      );
+      await client.sendApprovalRequest(map.guild_id, map.discord_thread_id, text, {
+        token,
+        decisions: payload.availableDecisions,
+      });
+    } else {
+      await client.sendMessage(map.guild_id, map.discord_thread_id, text);
+    }
     return true;
   };
 
@@ -629,6 +717,7 @@ export default async function plugin(bb: BbPluginApi) {
           postInteractionToThreadChannel(
             bbThreadId,
             `❓ **BB needs you:** ${prompt}`,
+            interaction as PendingInteractionLike,
           ),
         markPosted: () => markInteractionPosted(bbThreadId, interaction.id),
       });
@@ -831,7 +920,7 @@ export default async function plugin(bb: BbPluginApi) {
       await sendToDiscord(
         message.guildId,
         message.channelId,
-        "⚠️ I found multiple pending BB requests. Open the BB thread and answer each one there.",
+        "⚠️ I found multiple pending BB requests. Use the buttons on the request you want to answer, or open the BB thread.",
       );
       return true;
     }
@@ -861,6 +950,104 @@ export default async function plugin(bb: BbPluginApi) {
     }
     touchMap(map.bb_thread_id);
     return true;
+  };
+
+  const resolvingApprovalTokens = new Set<string>();
+  const handleApprovalAction = async (
+    action: DiscordInboundApprovalAction,
+  ): Promise<DiscordApprovalActionResult> => {
+    if (resolvingApprovalTokens.has(action.token)) {
+      return {
+        outcome: "retry",
+        errorText: "That approval is already being processed. Please wait a moment.",
+      };
+    }
+    resolvingApprovalTokens.add(action.token);
+    try {
+      const stored = getApprovalAction(action.token);
+      if (!stored || stored.status !== "pending") {
+        return {
+          outcome: "stale",
+          statusText: "⌛ This BB approval is no longer pending.",
+        };
+      }
+      const map = getMapByBbThread(stored.bb_thread_id);
+      if (
+        !map ||
+        !isAuthorized(action.guildId, action.authorId) ||
+        !isActiveMappedGuild(map.guild_id, effectiveGuildId()) ||
+        map.guild_id !== action.guildId ||
+        map.discord_thread_id !== action.channelId ||
+        stored.discord_channel_id !== action.channelId
+      ) {
+        return {
+          outcome: "retry",
+          errorText: "This approval does not belong to this Discord conversation.",
+        };
+      }
+
+      const interactions = await bb.sdk.threads.interactions.list({
+        threadId: stored.bb_thread_id,
+      });
+      const interaction = interactions.find(
+        (candidate) =>
+          candidate.id === stored.interaction_id && candidate.status === "pending",
+      );
+      if (!interaction) {
+        finishApprovalAction(action.token, "stale");
+        return {
+          outcome: "stale",
+          statusText: "⌛ This BB approval was already answered or expired.",
+        };
+      }
+
+      const resolution = resolveApprovalDecision(
+        interaction as PendingInteractionLike,
+        action.decision,
+      );
+      if (resolution.kind !== "resolve") {
+        finishApprovalAction(action.token, "stale");
+        return {
+          outcome: "stale",
+          statusText: "⌛ That choice is not available for this BB approval.",
+        };
+      }
+      await bb.sdk.threads.interactions.resolve({
+        threadId: stored.bb_thread_id,
+        interactionId: stored.interaction_id,
+        resolution: resolution.resolution,
+      });
+      finishApprovalAction(
+        action.token,
+        "resolved",
+        action.decision,
+        action.authorId,
+      );
+      touchMap(stored.bb_thread_id);
+
+      const actor = `<@${action.authorId}>`;
+      if (action.decision === "allow_once") {
+        return { outcome: "resolved", statusText: `✅ Approved once by ${actor}.` };
+      }
+      if (action.decision === "allow_for_session") {
+        return {
+          outcome: "resolved",
+          statusText: `✅ Allowed for this BB session by ${actor}. Similar requests may proceed without another prompt.`,
+        };
+      }
+      return { outcome: "resolved", statusText: `⛔ Denied by ${actor}.` };
+    } catch (error) {
+      bb.log.warn(
+        `Could not resolve Discord approval ${action.token}: ${errorMessage(error)}`,
+      );
+      return {
+        outcome: "retry",
+        errorText:
+          "BB could not apply that decision yet. The approval is still open; please try again.",
+      };
+    } finally {
+      resolvingApprovalTokens.delete(action.token);
+    }
   };
 
   const handlePairingMessage = async (
@@ -1282,7 +1469,7 @@ export default async function plugin(bb: BbPluginApi) {
                 : "Paired: no — add the bot token in Settings → Plugins → Discord",
             `Authorized users: ${effectiveAllowedUsers().join(", ") || "(none)"}`,
             `Server access: ${accessLevel()}${cached.allowDestructiveServerActions ? " (destructive actions enabled)" : ""}`,
-            `Thread permission mode: ${cached.permissionMode ?? "accept-edits"}`,
+            `Thread permission mode: ${cached.permissionMode ?? "auto"}`,
             cached.botToken && !activeGuild
               ? "Pairing: waiting for an explicit `bb discord pair` request (the one-time code is hidden from status)."
               : null,
@@ -1407,6 +1594,7 @@ export default async function plugin(bb: BbPluginApi) {
       isPairingCandidate,
       botUserId: getBotUserId,
       onMessage: handleInbound,
+      onApprovalAction: handleApprovalAction,
       onReady: async (tag) => {
         botTag = tag;
         setGatewayState("connected", null, "gateway-connected");
@@ -1505,6 +1693,9 @@ export default async function plugin(bb: BbPluginApi) {
     db.prepare("DELETE FROM discord_seen_messages WHERE seen_at < ?").run(cutoff);
     db.prepare("DELETE FROM discord_posted_replies WHERE posted_at < ?").run(cutoff);
     db.prepare("DELETE FROM discord_posted_interactions WHERE posted_at < ?").run(
+      cutoff,
+    );
+    db.prepare("DELETE FROM discord_interaction_actions WHERE created_at < ?").run(
       cutoff,
     );
   });
