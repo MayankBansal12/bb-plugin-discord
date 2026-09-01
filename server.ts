@@ -503,11 +503,19 @@ export default async function plugin(bb: BbPluginApi) {
     }
   };
 
-  const loadCatalog = async (hostId: string | null): Promise<MachineCatalog | null> => {
+  const loadCatalog = async (
+    hostId: string | null,
+    providerId?: string | null,
+  ): Promise<MachineCatalog | null> => {
     try {
       const catalog = hostId
-        ? await bb.sdk.providers.models({ hostId })
-        : await bb.sdk.providers.models();
+        ? await bb.sdk.providers.models({
+            hostId,
+            ...(providerId ? { providerId } : {}),
+          })
+        : providerId
+          ? await bb.sdk.providers.models({ providerId })
+          : await bb.sdk.providers.models();
       return {
         providers: catalog.providers.map((provider) => ({
           id: provider.id,
@@ -554,7 +562,6 @@ export default async function plugin(bb: BbPluginApi) {
       effectiveHostId && machines
         ? machines.find((entry) => entry.id === effectiveHostId) ?? null
         : null;
-    const catalog = await loadCatalog(effectiveHostId);
     let defaults: ProjectExecutionDefaults | null = null;
     if (project) {
       try {
@@ -567,6 +574,13 @@ export default async function plugin(bb: BbPluginApi) {
         );
       }
     }
+    // Model catalogs are provider-scoped. Without the provider id, BB returns
+    // the routed default provider's models, which made a valid OpenCode/Grok
+    // selection look absent when this plugin validated it.
+    const catalog = await loadCatalog(
+      effectiveHostId,
+      selection.providerId ?? defaults?.providerId,
+    );
     return { project, projects, projectError, machines, machine, catalog, defaults };
   };
 
@@ -671,6 +685,8 @@ export default async function plugin(bb: BbPluginApi) {
         id: project.id,
         name: project.name,
         kind: project.kind,
+        hostIds: project.hostIds,
+        defaultHostId: project.defaultHostId,
       })),
       machines: (context.machines ?? []).map((machine) => ({
         id: machine.id,
@@ -822,7 +838,10 @@ export default async function plugin(bb: BbPluginApi) {
         request.machineHostId?.trim() || null,
       ];
       const catalog = request.model?.trim()
-        ? await loadCatalog(machine ?? projectResult.project.defaultHostId)
+        ? await loadCatalog(
+            machine ?? projectResult.project.defaultHostId,
+            request.providerId,
+          )
         : null;
 
       const check = validateSelectionRequest({ request, machines, catalog });

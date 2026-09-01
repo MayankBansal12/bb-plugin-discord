@@ -10,6 +10,7 @@ import {
   UrlLink,
   definePluginApp,
   experimental_ProviderModelPicker as ProviderModelPicker,
+  type ExperimentalProviderModelPickerValue,
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
@@ -326,7 +327,7 @@ function Field({ label, description, children }: { label: string; description?: 
   const id = useId();
   const labelId = `${id}-label`;
   return (
-    <div className="grid gap-2 sm:grid-cols-2 sm:items-start sm:gap-6">
+    <div className="grid gap-2 sm:grid-cols-[minmax(0,11rem)_minmax(0,1fr)] sm:items-start sm:gap-4">
       <div className="space-y-1">
         <Label id={labelId} htmlFor={id}>{label}</Label>
         {description ? <p className="text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
@@ -384,11 +385,31 @@ function draftFrom(status: DiscordPairingStatus): ConfigDraft {
   };
 }
 
+function pickerValueFromExecution(
+  execution: DiscordPairingStatus["execution"],
+): ExperimentalProviderModelPickerValue | null {
+  if (
+    !execution.resolvedProviderId ||
+    !execution.model.value ||
+    !execution.resolvedReasoningLevel
+  ) {
+    return null;
+  }
+  return {
+    providerId: execution.resolvedProviderId,
+    model: execution.model.value,
+    reasoningLevel: execution.resolvedReasoningLevel,
+    ...(execution.resolvedServiceTier
+      ? { serviceTier: execution.resolvedServiceTier }
+      : {}),
+  };
+}
+
 /**
- * Project, machine and model are one routing decision, validated together by
- * one RPC, so they save as soon as they are picked. Narrowing the project or
- * the machine invalidates what sits below it, which is why each reset is
- * explicit rather than a guess at a replacement.
+ * Project and machine changes apply immediately because they determine which
+ * provider catalog BB can read. Model changes stay as a local draft until the
+ * operator applies them, so switching provider tabs cannot disable and close
+ * BB's picker midway through catalog resolution.
  */
 function RoutingFields({ state, saving, setSaving }: { state: DiscordStatusState; saving: boolean; setSaving: (saving: boolean) => void }) {
   const status = state.status!;
@@ -397,9 +418,31 @@ function RoutingFields({ state, saving, setSaving }: { state: DiscordStatusState
     field.source === "setting" ? field.value ?? "" : "";
   const selectedProject = pinned(execution.project);
   const selectedMachine = pinned(execution.machine);
-  const effectiveModel = execution.models.find((option) =>
-    option.providerId === execution.resolvedProviderId && option.model === execution.model.value
+  const effectivePickerValue = pickerValueFromExecution(execution);
+  const [modelDraft, setModelDraft] = useState<ExperimentalProviderModelPickerValue | null>(
+    effectivePickerValue,
   );
+  const [modelDirty, setModelDirty] = useState(false);
+
+  useEffect(() => {
+    if (!modelDirty) setModelDraft(effectivePickerValue);
+  }, [
+    modelDirty,
+    execution.resolvedProviderId,
+    execution.model.value,
+    execution.resolvedReasoningLevel,
+    execution.resolvedServiceTier,
+  ]);
+
+  const standardProjects = execution.projects.filter((project) => project.kind === "standard");
+  const activeProject = selectedProject
+    ? execution.projects.find((project) => project.id === selectedProject) ?? null
+    : execution.projects.find((project) => project.kind === "personal") ?? null;
+  const defaultMachine = activeProject?.defaultHostId
+    ? execution.machines.find((machine) => machine.id === activeProject.defaultHostId) ?? null
+    : null;
+  const machineCanRunProject = (machineId: string): boolean =>
+    activeProject?.kind !== "standard" || activeProject.hostIds.includes(machineId);
 
   const save = async (next: {
     defaultProjectId: string | null;
@@ -408,83 +451,147 @@ function RoutingFields({ state, saving, setSaving }: { state: DiscordStatusState
     model: string | null;
     reasoningLevel: DiscordPairingStatus["execution"]["resolvedReasoningLevel"];
     serviceTier: DiscordPairingStatus["execution"]["resolvedServiceTier"];
-  }) => {
+  }): Promise<DiscordPairingStatus | null> => {
     setSaving(true);
     try {
-      state.setStatus(await state.rpc.call("setExecutionSelection", next));
+      const updated = await state.rpc.call("setExecutionSelection", next);
+      state.setStatus(updated);
       state.setError(null);
+      return updated;
     } catch {
       state.setError("That selection could not be saved. Try again.");
+      return null;
     } finally {
       setSaving(false);
     }
   };
 
+  const replaceRoute = async (next: Parameters<typeof save>[0]) => {
+    const updated = await save(next);
+    if (!updated) return;
+    setModelDirty(false);
+    setModelDraft(pickerValueFromExecution(updated.execution));
+  };
+
+  const applyModel = async () => {
+    if (!modelDraft) return;
+    const updated = await save({
+      defaultProjectId: selectedProject || null,
+      machineHostId: selectedMachine || null,
+      providerId: modelDraft.providerId,
+      model: modelDraft.model,
+      reasoningLevel: modelDraft.reasoningLevel,
+      serviceTier: modelDraft.serviceTier ?? null,
+    });
+    if (
+      updated?.execution.model.source === "setting" &&
+      updated.execution.resolvedProviderId === modelDraft.providerId &&
+      updated.execution.model.value === modelDraft.model
+    ) {
+      setModelDirty(false);
+      setModelDraft(pickerValueFromExecution(updated.execution));
+    }
+  };
+
+  const useProjectDefaultModel = async () => {
+    if (execution.model.source !== "setting") {
+      setModelDirty(false);
+      setModelDraft(effectivePickerValue);
+      return;
+    }
+    const updated = await save({
+      defaultProjectId: selectedProject || null,
+      machineHostId: selectedMachine || null,
+      providerId: null,
+      model: null,
+      reasoningLevel: null,
+      serviceTier: null,
+    });
+    if (updated?.execution.model.source === "default") {
+      setModelDirty(false);
+      setModelDraft(pickerValueFromExecution(updated.execution));
+    }
+  };
+
   return (
     <>
-      <Field label="Project" description="The checkout used for new requests.">
+      <Field label="Project" description="Choose a bb project for repository work, or use a personal workspace.">
         {(id) => (
           <Dropdown
             id={id}
             value={selectedProject || AUTOMATIC}
             disabled={saving}
             options={[
-              { value: AUTOMATIC, label: `Automatic — ${execution.project.label}` },
-              ...execution.projects.map((project) => ({ value: project.id, label: `${project.name}${project.kind === "personal" ? " — personal" : ""}` })),
+              { value: AUTOMATIC, label: "Personal workspace (no project)" },
+              ...standardProjects.map((project) => ({ value: project.id, label: project.name })),
             ]}
-            onValueChange={(value) => void save({ defaultProjectId: value === AUTOMATIC ? null : value, machineHostId: null, providerId: null, model: null, reasoningLevel: null, serviceTier: null })}
+            onValueChange={(value) => void replaceRoute({ defaultProjectId: value === AUTOMATIC ? null : value, machineHostId: null, providerId: null, model: null, reasoningLevel: null, serviceTier: null })}
           />
         )}
       </Field>
-      <Field label="Machine" description="Where new requests run.">
+      <Field label="Machine" description={activeProject?.kind === "standard" ? "Only machines with a checkout for this project can run it." : "Choose a machine, or let bb use its default."}>
         {(id) => (
           <Dropdown
             id={id}
             value={selectedMachine || AUTOMATIC}
             disabled={saving}
             options={[
-              { value: AUTOMATIC, label: `Automatic — ${execution.machine.label}` },
-              ...execution.machines.map((machine) => ({ value: machine.id, label: `${machine.name}${machine.status === "connected" ? "" : " — offline"}` })),
+              {
+                value: AUTOMATIC,
+                label: activeProject?.kind === "standard"
+                  ? `Project default${defaultMachine ? ` — ${defaultMachine.name}` : ""}`
+                  : "BB default machine",
+              },
+              ...execution.machines.map((machine) => {
+                const unavailable = !machineCanRunProject(machine.id);
+                return {
+                  value: machine.id,
+                  label: `${machine.name}${unavailable ? " — no project checkout" : machine.status === "connected" ? "" : " — offline"}`,
+                  disabled: unavailable,
+                };
+              }),
             ]}
-            onValueChange={(value) => void save({ defaultProjectId: selectedProject || null, machineHostId: value === AUTOMATIC ? null : value, providerId: null, model: null, reasoningLevel: null, serviceTier: null })}
+            onValueChange={(value) => void replaceRoute({ defaultProjectId: selectedProject || null, machineHostId: value === AUTOMATIC ? null : value, providerId: null, model: null, reasoningLevel: null, serviceTier: null })}
           />
         )}
       </Field>
-      <Field label="Model" description="Available models for this machine.">
+      <Field label="Provider and model" description="Choose from providers available on the selected machine, then apply once.">
         {(_id) => (
           <div className="space-y-2">
-            {effectiveModel && execution.resolvedProviderId && execution.resolvedReasoningLevel ? (
+            {modelDraft ? (
               <ProviderModelPicker
-                value={{
-                  providerId: execution.resolvedProviderId,
-                  model: effectiveModel.model,
-                  reasoningLevel: execution.resolvedReasoningLevel,
-                  ...(execution.resolvedServiceTier ? { serviceTier: execution.resolvedServiceTier } : {}),
-                }}
+                value={modelDraft}
                 routing={execution.machine.value ? { kind: "host", hostId: execution.machine.value } : undefined}
                 disabled={saving}
                 align="end"
                 className="w-full justify-between"
-                onChange={(value) => void save({
-                  defaultProjectId: selectedProject || null,
-                  machineHostId: selectedMachine || null,
-                  providerId: value.providerId,
-                  model: value.model,
-                  reasoningLevel: value.reasoningLevel,
-                  serviceTier: value.serviceTier ?? null,
-                })}
+                onChange={(value) => {
+                  setModelDraft(value);
+                  setModelDirty(true);
+                }}
               />
             ) : <Notice destructive>The model list is unavailable.</Notice>}
-            <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-              <span>{execution.model.source === "default" ? `Project default — ${execution.model.label}` : "Pinned for Discord"}</span>
-              {execution.model.source === "setting" ? (
-                <Button variant="ghost" size="sm" disabled={saving} onClick={() => void save({ defaultProjectId: selectedProject || null, machineHostId: selectedMachine || null, providerId: null, model: null, reasoningLevel: null, serviceTier: null })}>Use project default</Button>
-              ) : null}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground" aria-live="polite">
+                {modelDirty
+                  ? "Provider or model changed — not applied yet"
+                  : execution.model.source === "default"
+                    ? `Using project default — ${execution.model.label}`
+                    : "Applied to new Discord requests"}
+              </span>
+              <div className="flex items-center gap-1">
+                {execution.model.source === "setting" || modelDirty ? (
+                  <Button variant="ghost" size="sm" disabled={saving} onClick={() => void useProjectDefaultModel()}>Use project default</Button>
+                ) : null}
+                <Button size="sm" disabled={saving || !modelDirty || !modelDraft} onClick={() => void applyModel()}>
+                  {saving && modelDirty ? "Applying…" : "Apply model"}
+                </Button>
+              </div>
             </div>
           </div>
         )}
       </Field>
-      {execution.issues.length > 0 ? <Notice destructive>{execution.issues.join(" ")}</Notice> : <p className="text-xs leading-relaxed text-muted-foreground">{saving ? "Saving…" : execution.summary}</p>}
+      {execution.issues.length > 0 ? <Notice destructive>{execution.issues.join(" ")}</Notice> : <p className="text-xs leading-relaxed text-muted-foreground">{saving ? "Updating request routing…" : execution.summary}</p>}
     </>
   );
 }
@@ -601,7 +708,7 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
           <CardTitle className="text-base">Where requests run</CardTitle>
           <CardDescription>Choose where Discord requests open in bb.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-5">
+        <CardContent className="space-y-4">
           <RoutingFields state={state} saving={savingRouting} setSaving={setSavingRouting} />
         </CardContent>
       </Card>

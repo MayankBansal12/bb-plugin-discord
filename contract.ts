@@ -68,6 +68,10 @@ const executionSchema = z.object({
       id: z.string(),
       name: z.string(),
       kind: z.enum(["personal", "standard"]),
+      /** Machines where this project already has a checkout. */
+      hostIds: z.array(z.string()),
+      /** Machine used when Discord does not override project routing. */
+      defaultHostId: z.string().nullable(),
     }).strict(),
   ),
   /** Enrolled machines, so the panel can name what the settings field takes. */

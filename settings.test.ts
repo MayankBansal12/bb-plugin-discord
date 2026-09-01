@@ -69,7 +69,15 @@ test("execution selection validates and writes one coherent routing choice", () 
       .filter(Boolean),
     ["defaultProjectId", "machineHostId", "providerId", "model", "reasoningLevel", "serviceTier"],
   );
-  assert.match(handler, /loadCatalog\(machine \?\? projectResult\.project\.defaultHostId\)/);
+  assert.match(
+    handler,
+    /loadCatalog\(\s*machine \?\? projectResult\.project\.defaultHostId,\s*request\.providerId/,
+  );
+});
+
+test("model catalogs are loaded for the selected provider", () => {
+  assert.match(serverSource, /bb\.sdk\.providers\.models\(\{\s*hostId,\s*\.\.\.\(providerId \? \{ providerId \} : \{\}\)/);
+  assert.match(serverSource, /selection\.providerId \?\? defaults\?\.providerId/);
 });
 
 test("the connected configuration handler cannot change token or execution pins", () => {
