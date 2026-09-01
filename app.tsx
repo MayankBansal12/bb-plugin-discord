@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -636,9 +637,30 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
     );
 
   const gatewayDown = status.gateway.state !== "connected";
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [saveBarBounds, setSaveBarBounds] = useState({ left: 0, width: 0 });
+
+  useLayoutEffect(() => {
+    if (!dirty || !panelRef.current) return;
+    const panel = panelRef.current;
+    const updateBounds = () => {
+      const { left, width } = panel.getBoundingClientRect();
+      setSaveBarBounds((current) => (
+        current.left === left && current.width === width ? current : { left, width }
+      ));
+    };
+    updateBounds();
+    const resizeObserver = new ResizeObserver(updateBounds);
+    resizeObserver.observe(panel);
+    window.addEventListener("resize", updateBounds);
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", updateBounds);
+    };
+  }, [dirty]);
 
   return (
-    <div className="discord-enter space-y-4">
+    <div ref={panelRef} className="discord-enter space-y-4">
       {status.notice ? <Notice>{status.notice}</Notice> : null}
       {state.error ? <Notice destructive>{state.error}</Notice> : null}
       {gatewayDown ? <Notice destructive>{view.connectionDetail}</Notice> : null}
@@ -736,7 +758,16 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
       </Card>
 
       {dirty ? (
-        <div className="discord-unsaved-bar" role="status" aria-live="polite">
+        <div
+          className="discord-unsaved-bar"
+          role="status"
+          aria-live="polite"
+          style={{
+            left: saveBarBounds.left,
+            width: saveBarBounds.width,
+            visibility: saveBarBounds.width > 0 ? "visible" : "hidden",
+          }}
+        >
           <div className="flex min-w-0 items-center gap-3">
             <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-amber-400 text-sm font-bold text-amber-950" aria-hidden="true">!</span>
             <span className="truncate text-sm font-medium text-foreground">

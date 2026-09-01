@@ -17,11 +17,10 @@
 }
 
 .discord-unsaved-bar {
-  position: sticky;
+  position: fixed;
   bottom: 1rem;
   z-index: 50;
   display: flex;
-  width: 100%;
   min-height: 4.5rem;
   align-items: center;
   justify-content: space-between;

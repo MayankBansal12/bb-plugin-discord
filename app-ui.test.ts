@@ -76,12 +76,15 @@ test("the model picker stays compact and every edit uses the settings-scoped sav
   assert.match(app, /edit\("destructiveActions", checked\)/);
   assert.doesNotMatch(app, /dirty && "pb-24"/);
   assert.match(app, /before using the Discord bot\./);
-  assert.match(css, /\.discord-unsaved-bar\s*\{[\s\S]*?position: sticky;/);
+  assert.match(css, /\.discord-unsaved-bar\s*\{[\s\S]*?position: fixed;/);
   assert.doesNotMatch(css, /\.discord-enter\s*\{[^}]*animation:[^;}]*both/);
   const unsavedBar = css.match(/\.discord-unsaved-bar\s*\{([\s\S]*?)\n\}/)?.[1];
   assert.ok(unsavedBar);
-  assert.match(unsavedBar, /width: 100%/);
-  assert.doesNotMatch(unsavedBar, /\bleft:|translateX|calc\(50%/);
+  assert.doesNotMatch(unsavedBar, /\bleft:|\bwidth:|translateX|calc\(50%/);
+  assert.match(app, /ref=\{panelRef\}/);
+  assert.match(app, /panel\.getBoundingClientRect\(\)/);
+  assert.match(app, /left: saveBarBounds\.left/);
+  assert.match(app, /width: saveBarBounds\.width/);
   assert.match(unsavedBar, /background: var\(--card\)/);
   assert.doesNotMatch(unsavedBar, /\bborder:|\bbox-shadow:/);
   assert.doesNotMatch(select, /focus:ring-2|focus:ring-ring/);
