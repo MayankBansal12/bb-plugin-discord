@@ -23,6 +23,7 @@ test("the host-rendered settings form asks for the bot token only", () => {
   assert.ok(block, "settings definition should be present");
   assert.match(block, /botToken:/);
   assert.match(block, /secret: true/);
+  assert.match(block, /label: "Discord Token"/);
   for (const key of [
     "permissionMode",
     "serverAccess",

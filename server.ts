@@ -267,7 +267,7 @@ export default async function plugin(bb: BbPluginApi) {
     botToken: {
       type: "string",
       secret: true,
-      label: "Set or update token",
+      label: "Discord Token",
       description:
         "Paste your Discord bot token to connect for the first time or replace the current token. bb stores it securely and verifies it before continuing.",
     },
