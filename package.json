@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-discord",
   "version": "0.1.0",
-  "description": "Control allowlisted BB agent threads from Discord and receive lifecycle updates.",
+  "description": "Drive bb through your Discord bot, start threads, monitor status, set reminders and receive lifecycle updates.",
   "type": "module",
   "engines": {
     "bb": ">=0.40.0",
@@ -9,7 +9,7 @@
   },
   "bb": {
     "name": "Discord",
-    "description": "Drive BB agent threads from Discord: start, chat, answer interactions, and receive lifecycle updates.",
+    "description": "Drive bb through your Discord bot, start threads, monitor status, set reminders and receive lifecycle updates.",
     "branding": {
       "icon": "./icons/discord.svg"
     },

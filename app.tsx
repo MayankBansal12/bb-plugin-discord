@@ -103,8 +103,9 @@ function useDiscordStatus(): DiscordStatusState {
   return { status, error, now, rpc, refresh, setStatus, setError };
 }
 
-function Icon({ name, className }: { name: "check" | "copy" | "external"; className?: string }) {
+function Icon({ name, className }: { name: "alert" | "check" | "copy" | "external"; className?: string }) {
   const path = {
+    alert: <><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.8 2.2 18a2 2 0 0 0 1.7 3h16.2a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0Z" /></>,
     check: <path d="m5 12 4 4L19 6" />,
     copy: <><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>,
     external: <><path d="M14 5h5v5" /><path d="m10 14 9-9" /><path d="M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5" /></>,
@@ -664,32 +665,49 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
       {status.notice ? <Notice>{status.notice}</Notice> : null}
       {state.error ? <Notice destructive>{state.error}</Notice> : null}
       {gatewayDown ? <Notice destructive>{view.connectionDetail}</Notice> : null}
-      <Card>
-        <CardContent className="grid gap-4 pt-5 sm:grid-cols-2">
-          <div className="flex items-center gap-3 border-b border-border pb-4 sm:col-span-2">
-            <span className={cn("size-2 rounded-full", gatewayDown ? "bg-destructive" : "bg-primary")} aria-hidden="true" />
+      <Card className="overflow-hidden">
+        <CardContent className="p-0">
+          <div className="flex items-center gap-3 p-5">
+            <span
+              className={cn(
+                "flex size-9 shrink-0 items-center justify-center rounded-full",
+                gatewayDown
+                  ? "bg-destructive/10 text-destructive"
+                  : "bg-emerald-500/10 text-emerald-500",
+              )}
+              aria-hidden="true"
+            >
+              <Icon name={gatewayDown ? "alert" : "check"} className="size-4" />
+            </span>
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium">Connected to {view.serverLabel}</p>
+              <p className="truncate text-sm font-medium">
+                {gatewayDown ? `${view.serverLabel} needs attention` : view.serverLabel}
+              </p>
               <p className="truncate text-sm text-muted-foreground">{view.connectionDetail}</p>
             </div>
-            <Badge>Paired</Badge>
+            <Badge className={cn(
+              gatewayDown
+                ? "bg-destructive/10 text-destructive"
+                : "bg-emerald-500/10 text-emerald-500",
+            )}>
+              {gatewayDown ? "Needs attention" : "Connected"}
+            </Badge>
           </div>
-          <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Home channel</p>
-            <p className="mt-1 text-sm">{status.configuration.homeChannel.label}</p>
-          </div>
-          <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Authorized by</p>
-            <p className="mt-1 text-sm">{view.userLabel}</p>
-          </div>
-          <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Bot token</p>
-            <code className="mt-1 block text-sm">{status.configuration.botToken.masked}</code>
+          <div className="grid border-t border-border sm:grid-cols-2 sm:divide-x sm:divide-border">
+            <div className="p-5">
+              <p className="text-xs font-medium text-muted-foreground">Home channel</p>
+              <p className="mt-1 text-sm font-medium">{status.configuration.homeChannel.label}</p>
+            </div>
+            <div className="border-t border-border p-5 sm:border-t-0">
+              <p className="text-xs font-medium text-muted-foreground">Authorized by</p>
+              <p className="mt-1 truncate text-sm font-medium">{view.userLabel}</p>
+            </div>
           </div>
         </CardContent>
-        <CardFooter className="justify-end border-t border-border pt-4">
+        <CardFooter className="min-h-14 justify-between gap-4 border-t border-border bg-muted/20 px-5 py-3">
+          <p className="text-xs text-muted-foreground">Set or update the token in Configuration above.</p>
           {confirmingUnpair ? (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               <span className="text-xs text-muted-foreground">Remove the server connection and conversation links?</span>
               <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmingUnpair(false)}>Cancel</Button>
               <Button variant="destructive" size="sm" disabled={busy} onClick={() => void unpair()}>{unpairing ? "Disconnecting…" : "Disconnect"}</Button>
@@ -803,7 +821,7 @@ export default definePluginApp((app) => {
   app.slots.settingsSection({
     id: "setup",
     title: "Discord setup",
-    description: "Connect Discord and choose how requests run in bb.",
+    description: "Choose where threads run and what your Discord bot can access.",
     component: DiscordSettings,
   });
 });

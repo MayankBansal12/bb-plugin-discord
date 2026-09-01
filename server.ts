@@ -267,9 +267,9 @@ export default async function plugin(bb: BbPluginApi) {
     botToken: {
       type: "string",
       secret: true,
-      label: "Discord bot token",
+      label: "Set or update token",
       description:
-        "Create a bot in the Discord Developer Portal, enable Message Content Intent, then paste its token here. bb stores it securely and verifies it before continuing.",
+        "Paste your Discord bot token to connect for the first time or replace the current token. bb stores it securely and verifies it before continuing.",
     },
   });
 
