@@ -67,7 +67,7 @@ test("routing and model changes are staged for the single configuration save", (
   assert.doesNotMatch(app, /Apply model|setExecutionSelection/);
 });
 
-test("the model picker stays compact and every edit uses the fixed save bar", () => {
+test("the model picker stays compact and every edit uses the settings-scoped save bar", () => {
   assert.match(app, /className="max-w-full"/);
   assert.doesNotMatch(app, /className="w-full justify-between"/);
   assert.match(app, /className="discord-unsaved-bar"/);
@@ -76,12 +76,12 @@ test("the model picker stays compact and every edit uses the fixed save bar", ()
   assert.match(app, /edit\("destructiveActions", checked\)/);
   assert.doesNotMatch(app, /dirty && "pb-24"/);
   assert.match(app, /before using the Discord bot\./);
-  assert.match(css, /\.discord-unsaved-bar\s*\{[\s\S]*?position: fixed;/);
+  assert.match(css, /\.discord-unsaved-bar\s*\{[\s\S]*?position: sticky;/);
   assert.doesNotMatch(css, /\.discord-enter\s*\{[^}]*animation:[^;}]*both/);
   const unsavedBar = css.match(/\.discord-unsaved-bar\s*\{([\s\S]*?)\n\}/)?.[1];
   assert.ok(unsavedBar);
-  assert.match(unsavedBar, /left: 50%/);
-  assert.match(unsavedBar, /transform: translateX\(-50%\)/);
+  assert.match(unsavedBar, /width: 100%/);
+  assert.doesNotMatch(unsavedBar, /\bleft:|translateX|calc\(50%/);
   assert.match(unsavedBar, /background: var\(--card\)/);
   assert.doesNotMatch(unsavedBar, /\bborder:|\bbox-shadow:/);
   assert.doesNotMatch(select, /focus:ring-2|focus:ring-ring/);
