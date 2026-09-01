@@ -74,11 +74,18 @@ test("the model picker stays compact and every edit uses the fixed save bar", ()
   assert.match(app, />Reset<\/Button>/);
   assert.match(app, /checked=\{draft\.destructiveActions\}/);
   assert.match(app, /edit\("destructiveActions", checked\)/);
+  assert.doesNotMatch(app, /dirty && "pb-24"/);
+  assert.match(app, /before using the Discord bot\./);
   assert.match(css, /\.discord-unsaved-bar\s*\{[\s\S]*?position: fixed;/);
   assert.doesNotMatch(css, /\.discord-enter\s*\{[^}]*animation:[^;}]*both/);
   const unsavedBar = css.match(/\.discord-unsaved-bar\s*\{([\s\S]*?)\n\}/)?.[1];
   assert.ok(unsavedBar);
-  assert.doesNotMatch(unsavedBar, /\bborder:|\bbackground:|\bbox-shadow:/);
+  assert.match(unsavedBar, /left: 50%/);
+  assert.match(unsavedBar, /transform: translateX\(-50%\)/);
+  assert.match(unsavedBar, /background: var\(--card\)/);
+  assert.doesNotMatch(unsavedBar, /\bborder:|\bbox-shadow:/);
+  assert.doesNotMatch(select, /focus:ring-2|focus:ring-ring/);
+  assert.match(select, /focus:ring-0 focus:ring-offset-0/);
 });
 
 test("configured tokens render only the server-provided suffix mask", () => {

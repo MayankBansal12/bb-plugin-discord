@@ -18,18 +18,19 @@
 
 .discord-unsaved-bar {
   position: fixed;
-  right: 1rem;
   bottom: 1rem;
-  left: 1rem;
+  left: 50%;
   z-index: 50;
   display: flex;
   width: min(52rem, calc(100% - 2rem));
   min-height: 4.5rem;
-  margin-inline: auto;
+  transform: translateX(-50%);
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
   padding: .75rem .875rem .75rem 1rem;
+  border-radius: .75rem;
+  background: var(--card);
 }
 
 @media (max-width: 32rem) {

@@ -638,7 +638,7 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
   const gatewayDown = status.gateway.state !== "connected";
 
   return (
-    <div className={cn("discord-enter space-y-4", dirty && "pb-24")}>
+    <div className="discord-enter space-y-4">
       {status.notice ? <Notice>{status.notice}</Notice> : null}
       {state.error ? <Notice destructive>{state.error}</Notice> : null}
       {gatewayDown ? <Notice destructive>{view.connectionDetail}</Notice> : null}
@@ -740,7 +740,7 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
           <div className="flex min-w-0 items-center gap-3">
             <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-amber-400 text-sm font-bold text-amber-950" aria-hidden="true">!</span>
             <span className="truncate text-sm font-medium text-foreground">
-              {savingConfig ? "Saving your changes…" : "Careful — save these changes before using Discord."}
+              {savingConfig ? "Saving your changes…" : "Careful — save these changes before using the Discord bot."}
             </span>
           </div>
           <div className="flex shrink-0 items-center gap-2">
