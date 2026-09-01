@@ -95,6 +95,7 @@ export function clearStoredPairingState(db: PairingStateDatabase): void {
     db.prepare("DELETE FROM discord_threads").run();
     db.prepare("DELETE FROM discord_posted_replies").run();
     db.prepare("DELETE FROM discord_posted_interactions").run();
+    db.prepare("DELETE FROM discord_interaction_actions").run();
   })();
 }
 
@@ -229,9 +230,9 @@ export type BbPermissionMode = "accept-edits" | "auto" | "full";
 export type PermissionModeSetting = BbPermissionMode | "project-default";
 
 /**
- * BB orders permission modes least ("accept-edits") to most ("full")
- * privileged. Discord input is the least trusted input BB takes, so the
- * plugin pins the least privileged mode unless the operator opts out.
+ * Auto keeps workspace sandboxing while avoiding routine user prompts, which
+ * makes it the practical default for a remote Discord conversation. Existing
+ * explicit choices always win.
  */
 export function resolveSpawnPermissionMode(
   configured: string | undefined,
@@ -241,7 +242,7 @@ export function resolveSpawnPermissionMode(
   if (configured === "accept-edits" || configured === "auto" || configured === "full") {
     return configured;
   }
-  return "accept-edits";
+  return "auto";
 }
 
 // ---------------------------------------------------------------------------

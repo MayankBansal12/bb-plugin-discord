@@ -8,6 +8,7 @@ function makeClient(
     warn: () => {},
     error: () => {},
   },
+  overrides: Partial<DiscordClientOptions> = {},
 ): DiscordClient {
   const opts: DiscordClientOptions = {
     token: "unused-in-unit-tests",
@@ -18,9 +19,236 @@ function makeClient(
     onReady: () => {},
     onSuspectedMissingContentIntent: () => {},
     log,
+    ...overrides,
   };
   return new DiscordClient(opts);
 }
+
+test("approval requests render only BB-offered Discord buttons", async () => {
+  const client = makeClient();
+  let sent: unknown;
+  const channel = {
+    guildId: "guild-1",
+    archived: false,
+    isDMBased: () => false,
+    isThread: () => true,
+    send: async (payload: unknown) => {
+      sent = payload;
+      return { id: "message-1" };
+    },
+  };
+  const internal = client as unknown as {
+    client: { channels: { fetch: () => Promise<unknown> } };
+  };
+  internal.client.channels.fetch = async () => channel;
+
+  const messageId = await client.sendApprovalRequest(
+    "guild-1",
+    "channel-1",
+    "Approve this?",
+    {
+      token: "0123456789abcdef01234567",
+      decisions: ["allow_once", "deny"],
+    },
+  );
+
+  assert.equal(messageId, "message-1");
+  const payload = sent as {
+    content: string;
+    components: Array<{
+      components: Array<{ data: { custom_id: string; label: string } }>;
+    }>;
+  };
+  assert.equal(payload.content, "Approve this?");
+  assert.deepEqual(
+    payload.components[0]?.components.map((button) => button.data.label),
+    ["Approve once", "Deny"],
+  );
+  assert.deepEqual(
+    payload.components[0]?.components.map((button) => button.data.custom_id),
+    [
+      "bb-approval:v1:0123456789abcdef01234567:allow_once",
+      "bb-approval:v1:0123456789abcdef01234567:deny",
+    ],
+  );
+});
+
+test("authorized approval clicks resolve and disable the original buttons", async () => {
+  const actions: unknown[] = [];
+  const client = makeClient(undefined, {
+    isAuthorized: (guildId, userId) =>
+      guildId === "guild-1" && userId === "user-1",
+    onApprovalAction: async (action) => {
+      actions.push(action);
+      return { outcome: "resolved", statusText: "✅ Approved once." };
+    },
+  });
+  let deferred = false;
+  let edited: unknown;
+  const interaction = {
+    guildId: "guild-1",
+    channelId: "channel-1",
+    user: { id: "user-1", tag: "person" },
+    message: { id: "message-1", content: "Approval requested" },
+    deferUpdate: async () => {
+      deferred = true;
+    },
+    editReply: async (payload: unknown) => {
+      edited = payload;
+    },
+    followUp: async () => {},
+    reply: async () => {},
+  };
+  const invoke = client as unknown as {
+    handleApprovalInteraction: (
+      interaction: unknown,
+      action: { token: string; decision: "allow_once" },
+    ) => Promise<void>;
+  };
+
+  await invoke.handleApprovalInteraction(interaction, {
+    token: "0123456789abcdef01234567",
+    decision: "allow_once",
+  });
+
+  assert.equal(deferred, true);
+  assert.deepEqual(actions, [
+    {
+      token: "0123456789abcdef01234567",
+      decision: "allow_once",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "message-1",
+      authorId: "user-1",
+      authorTag: "person",
+    },
+  ]);
+  assert.deepEqual(edited, {
+    content: "Approval requested\n\n✅ Approved once.",
+    components: [],
+  });
+});
+
+test("unauthorized approval clicks are ephemeral and never reach BB", async () => {
+  let handled = false;
+  let reply: unknown;
+  const client = makeClient(undefined, {
+    isAuthorized: () => false,
+    onApprovalAction: async () => {
+      handled = true;
+      return { outcome: "resolved", statusText: "must not happen" };
+    },
+  });
+  const interaction = {
+    guildId: "guild-1",
+    channelId: "channel-1",
+    user: { id: "intruder", tag: "intruder" },
+    message: { id: "message-1", content: "Approval requested" },
+    reply: async (payload: unknown) => {
+      reply = payload;
+    },
+  };
+  const invoke = client as unknown as {
+    handleApprovalInteraction: (
+      interaction: unknown,
+      action: { token: string; decision: "deny" },
+    ) => Promise<void>;
+  };
+
+  await invoke.handleApprovalInteraction(interaction, {
+    token: "0123456789abcdef01234567",
+    decision: "deny",
+  });
+
+  assert.equal(handled, false);
+  assert.deepEqual(reply, {
+    content: "You are not authorized to approve this BB request.",
+    ephemeral: true,
+  });
+});
+
+test("temporary BB failures keep approval buttons available for retry", async () => {
+  const client = makeClient(undefined, {
+    isAuthorized: () => true,
+    onApprovalAction: async () => ({
+      outcome: "retry",
+      errorText: "BB is temporarily unavailable.",
+    }),
+  });
+  let edited = false;
+  let followUp: unknown;
+  const interaction = {
+    guildId: "guild-1",
+    channelId: "channel-1",
+    user: { id: "user-1", tag: "person" },
+    message: { id: "message-1", content: "Approval requested" },
+    deferUpdate: async () => {},
+    editReply: async () => {
+      edited = true;
+    },
+    followUp: async (payload: unknown) => {
+      followUp = payload;
+    },
+    reply: async () => {},
+  };
+  const invoke = client as unknown as {
+    handleApprovalInteraction: (
+      interaction: unknown,
+      action: { token: string; decision: "allow_once" },
+    ) => Promise<void>;
+  };
+
+  await invoke.handleApprovalInteraction(interaction, {
+    token: "0123456789abcdef01234567",
+    decision: "allow_once",
+  });
+
+  assert.equal(edited, false);
+  assert.deepEqual(followUp, {
+    content: "BB is temporarily unavailable.",
+    ephemeral: true,
+  });
+});
+
+test("stale approval clicks close the original Discord controls", async () => {
+  const client = makeClient(undefined, {
+    isAuthorized: () => true,
+    onApprovalAction: async () => ({
+      outcome: "stale",
+      statusText: "⌛ This BB approval is no longer pending.",
+    }),
+  });
+  let edited: unknown;
+  const interaction = {
+    guildId: "guild-1",
+    channelId: "channel-1",
+    user: { id: "user-1", tag: "person" },
+    message: { id: "message-1", content: "Approval requested" },
+    deferUpdate: async () => {},
+    editReply: async (payload: unknown) => {
+      edited = payload;
+    },
+    followUp: async () => {},
+    reply: async () => {},
+  };
+  const invoke = client as unknown as {
+    handleApprovalInteraction: (
+      interaction: unknown,
+      action: { token: string; decision: "deny" },
+    ) => Promise<void>;
+  };
+
+  await invoke.handleApprovalInteraction(interaction, {
+    token: "0123456789abcdef01234567",
+    decision: "deny",
+  });
+
+  assert.deepEqual(edited, {
+    content:
+      "Approval requested\n\n⌛ This BB approval is no longer pending.",
+    components: [],
+  });
+});
 
 test("destroy awaits and contains discord.js teardown failures", async () => {
   const warnings: string[] = [];

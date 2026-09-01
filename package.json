@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-discord",
-  "version": "0.1.0",
+  "version": "0.0.5",
   "description": "Drive bb through your Discord bot, start threads, monitor status, set reminders and receive lifecycle updates.",
   "type": "module",
   "engines": {

@@ -1,16 +1,27 @@
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
   Client,
   Events,
   GatewayIntentBits,
   Partials,
   type Channel,
+  type ButtonInteraction,
   type Guild,
   type GuildBasedChannel,
   type Message,
+  type MessageCreateOptions,
   type TextChannel,
   type ThreadChannel,
 } from "discord.js";
+import {
+  discordApprovalActionId,
+  parseDiscordApprovalActionId,
+  type ApprovalDecision,
+  type DiscordApprovalAction,
+} from "./bridge.js";
 import { classifyDiscordError } from "./pairing.js";
 
 export interface DiscordInboundMessage {
@@ -40,6 +51,9 @@ export interface DiscordClientOptions {
   isPairingCandidate: (content: string) => boolean;
   botUserId: () => string | undefined;
   onMessage: (message: DiscordInboundMessage) => void | Promise<void>;
+  onApprovalAction?: (
+    action: DiscordInboundApprovalAction,
+  ) => DiscordApprovalActionResult | Promise<DiscordApprovalActionResult>;
   onReady: (botTag: string) => void | Promise<void>;
   onConnectionStateChange?: (ready: boolean) => void;
   /** Fired at most once when message content arrives empty (intent is off). */
@@ -49,6 +63,24 @@ export interface DiscordClientOptions {
     warn: (msg: string) => void;
     error: (msg: string) => void;
   };
+}
+
+export interface DiscordInboundApprovalAction extends DiscordApprovalAction {
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  authorId: string;
+  authorTag: string;
+}
+
+export type DiscordApprovalActionResult =
+  | { outcome: "resolved"; statusText: string }
+  | { outcome: "stale"; statusText: string }
+  | { outcome: "retry"; errorText: string };
+
+export interface DiscordApprovalRequest {
+  token: string;
+  decisions: ApprovalDecision[];
 }
 
 export interface DiscordChannelSummary {
@@ -195,6 +227,17 @@ export class DiscordClient {
       });
     });
 
+    this.client.on(Events.InteractionCreate, (interaction) => {
+      if (!interaction.isButton()) return;
+      const action = parseDiscordApprovalActionId(interaction.customId);
+      if (!action) return;
+      void this.handleApprovalInteraction(interaction, action).catch((error) => {
+        opts.log.error(
+          `Discord approval handler failed: ${errorMessage(error)}`,
+        );
+      });
+    });
+
     this.client.on(Events.Error, (error) => {
       opts.log.error(`Discord client error: ${classifyDiscordError(error).message}`);
     });
@@ -248,6 +291,28 @@ export class DiscordClient {
         chunk,
       );
     }
+  }
+
+  async sendApprovalRequest(
+    guildId: string,
+    channelId: string,
+    text: string,
+    request: DiscordApprovalRequest,
+  ): Promise<string> {
+    const channel = await this.fetchGuildChannel(guildId, channelId, true);
+    if (!channel || !("send" in channel)) {
+      throw new Error(`Channel ${channelId} is not text-sendable`);
+    }
+    const row = new ActionRowBuilder<ButtonBuilder>();
+    for (const decision of request.decisions) {
+      row.addComponents(approvalButton(request.token, decision));
+    }
+    const message = await this.sendChunkWithRetry(
+      channel as TextChannel | ThreadChannel,
+      channelId,
+      { content: text, components: row.components.length > 0 ? [row] : [] },
+    );
+    return message.id;
   }
 
   async sendTyping(guildId: string, channelId: string): Promise<void> {
@@ -572,13 +637,12 @@ export class DiscordClient {
   private async sendChunkWithRetry(
     channel: TextChannel | ThreadChannel,
     channelId: string,
-    text: string,
-  ): Promise<void> {
+    payload: string | MessageCreateOptions,
+  ): Promise<Message> {
     let lastError: unknown;
     for (let attempt = 1; attempt <= SEND_ATTEMPTS; attempt += 1) {
       try {
-        await channel.send(text);
-        return;
+        return await channel.send(payload);
       } catch (error) {
         lastError = error;
         // A permission or not-found failure will not fix itself; stop early.
@@ -593,6 +657,64 @@ export class DiscordClient {
       }
     }
     throw toFriendlyError(lastError);
+  }
+
+  private async handleApprovalInteraction(
+    interaction: ButtonInteraction,
+    action: DiscordApprovalAction,
+  ): Promise<void> {
+    const guildId = interaction.guildId;
+    const channelId = interaction.channelId;
+    if (
+      !guildId ||
+      !channelId ||
+      !this.opts.isAuthorized(guildId, interaction.user.id)
+    ) {
+      await interaction.reply({
+        content: "You are not authorized to approve this BB request.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (!this.opts.onApprovalAction) {
+      await interaction.reply({
+        content: "This BB approval bridge is not available right now.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.deferUpdate();
+    let result: DiscordApprovalActionResult;
+    try {
+      result = await this.opts.onApprovalAction({
+        ...action,
+        guildId,
+        channelId,
+        messageId: interaction.message.id,
+        authorId: interaction.user.id,
+        authorTag: interaction.user.tag,
+      });
+    } catch (error) {
+      this.opts.log.warn(
+        `Could not apply Discord approval: ${errorMessage(error)}`,
+      );
+      await interaction.followUp({
+        content:
+          "BB could not apply that decision yet. The approval is still open; please try again.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (result.outcome === "retry") {
+      await interaction.followUp({ content: result.errorText, ephemeral: true });
+      return;
+    }
+    const original = interaction.message.content.trim();
+    await interaction.editReply({
+      content: `${original}${original ? "\n\n" : ""}${result.statusText}`,
+      components: [],
+    });
   }
 
   private async fetchGuildChannel(
@@ -669,6 +791,19 @@ export class DiscordClient {
     this.reportedMissingContentIntent = true;
     this.opts.onSuspectedMissingContentIntent();
   }
+}
+
+function approvalButton(token: string, decision: ApprovalDecision): ButtonBuilder {
+  const button = new ButtonBuilder().setCustomId(
+    discordApprovalActionId(token, decision),
+  );
+  if (decision === "allow_once") {
+    return button.setLabel("Approve once").setStyle(ButtonStyle.Primary);
+  }
+  if (decision === "allow_for_session") {
+    return button.setLabel("Allow for session").setStyle(ButtonStyle.Success);
+  }
+  return button.setLabel("Deny").setStyle(ButtonStyle.Danger);
 }
 
 export function chunkForDiscord(text: string): string[] {

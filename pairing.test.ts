@@ -88,6 +88,7 @@ test("unpair clears authorization and every guild-bound forwarding row", () => {
     "DELETE FROM discord_threads",
     "DELETE FROM discord_posted_replies",
     "DELETE FROM discord_posted_interactions",
+    "DELETE FROM discord_interaction_actions",
   ]);
 });
 
@@ -130,12 +131,12 @@ test("the invite URL is derived from the bot token", () => {
   );
 });
 
-test("Discord threads default to the least privileged permission mode", () => {
-  assert.equal(resolveSpawnPermissionMode(undefined, "full"), "accept-edits");
+test("Discord threads default to sandboxed automatic review", () => {
+  assert.equal(resolveSpawnPermissionMode(undefined, "full"), "auto");
   assert.equal(resolveSpawnPermissionMode("accept-edits", "full"), "accept-edits");
   assert.equal(resolveSpawnPermissionMode("project-default", "full"), "full");
   assert.equal(resolveSpawnPermissionMode("auto", "accept-edits"), "auto");
-  assert.equal(resolveSpawnPermissionMode("nonsense", "auto"), "accept-edits");
+  assert.equal(resolveSpawnPermissionMode("nonsense", "accept-edits"), "auto");
 });
 
 test("Discord failures become actionable operator messages", () => {
