@@ -63,7 +63,7 @@ This plugin can start agent work on the machine that runs BB. Treat access like 
 - Only the paired guild is accepted; only paired and explicitly allowed users can drive BB.
 - New conversations require an explicit bot mention.
 - Discord-started BB threads run in `auto` — BB checks in before anything risky — unless you choose otherwise. A machine whose permission ceiling is lower lowers the thread further.
-- The bot token is a secret setting stored in BB's permission-restricted plugin secrets directory and is never exposed to the frontend.
+- The bot token is a secret setting stored in BB's permission-restricted plugin secrets directory. The frontend receives only a fixed mask and its final four characters for rotation recognition.
 - Prompts are capped at 8,000 characters and Discord message IDs are deduplicated.
 - Discord-started threads use your personal project unless you pick a default project. There is deliberately no "first available project" fallback.
 

@@ -28,11 +28,11 @@ test("paired installs retain the disconnect control when the gateway fails", () 
   assert.match(app, />Disconnect server<\/Button>/);
 });
 
-test("fields own their labels, cap control width, and actions have independent busy states", () => {
+test("fields own their labels, controls fill the row, and actions have independent busy states", () => {
   assert.match(app, /<Label id=\{labelId\} htmlFor=\{id\}>\{label\}<\/Label>/);
   assert.match(app, /role="group" aria-labelledby=\{labelId\}/);
-  assert.match(app, /sm:grid-cols-\[10rem_minmax\(0,22rem\)\]/);
-  for (const state of ["savingConfig", "savingDestructive", "unpairing"]) {
+  assert.match(app, /sm:grid-cols-\[10rem_minmax\(0,1fr\)\]/);
+  for (const state of ["savingConfig", "unpairing"]) {
     assert.match(app, new RegExp(`const \\[${state},`));
   }
 });
@@ -54,7 +54,7 @@ test("routing choices are concise and fold the default into the machine list", (
   assert.match(app, /`\$\{defaultMachine\.name\} \(default\)`/);
   assert.match(app, /machine\.id !== defaultMachineId/);
   assert.match(app, /\(no checkout\)/);
-  assert.doesNotMatch(app, /Automatic|—/);
+  assert.doesNotMatch(app, /Automatic/);
 });
 
 test("routing and model changes are staged for the single configuration save", () => {
@@ -63,13 +63,22 @@ test("routing and model changes are staged for the single configuration save", (
   assert.match(picker, /edit\(\{ modelValue: value, modelPinned: true \}\)/);
   assert.match(app, /state\.rpc\.call\("setConfiguration"/);
   assert.match(app, /providerId: draft\.modelPinned/);
-  assert.match(app, />Save configuration<\/Button>/);
+  assert.match(app, /"Save Changes"/);
   assert.doesNotMatch(app, /Apply model|setExecutionSelection/);
 });
 
-test("configured tokens render only the server-provided mask", () => {
+test("the model picker stays compact and every edit uses the fixed save bar", () => {
+  assert.match(app, /className="max-w-full"/);
+  assert.doesNotMatch(app, /className="w-full justify-between"/);
+  assert.match(app, /className="discord-unsaved-bar"/);
+  assert.match(app, />Reset<\/Button>/);
+  assert.match(app, /checked=\{draft\.destructiveActions\}/);
+  assert.match(app, /edit\("destructiveActions", checked\)/);
+});
+
+test("configured tokens render only the server-provided suffix mask", () => {
   assert.match(app, /Saved token/);
-  assert.match(app, /configuration\.botToken\.applicationId/);
   assert.match(app, /configuration\.botToken\.masked/);
+  assert.doesNotMatch(app, /configuration\.botToken\.applicationId/);
   assert.doesNotMatch(app, /\[set\]/);
 });

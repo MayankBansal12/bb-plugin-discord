@@ -721,7 +721,6 @@ export default async function plugin(bb: BbPluginApi) {
     return {
       botToken: {
         configured: token !== null,
-        applicationId: token?.applicationId ?? null,
         masked: token?.masked ?? null,
       },
       permissionMode: {

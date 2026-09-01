@@ -3,13 +3,13 @@
 //
 // Two rules drive everything here:
 //   1. Never surface a live secret. The bot token and the pairing code are
-//      reduced to recognizable-but-useless fragments, and the application id
-//      is only reused because the invite URL already publishes it.
+//      reduced to recognizable-but-useless fragments; only four trailing
+//      token characters are retained so an operator can identify a rotation.
 //   2. Show the *effective* value, not the raw setting. An empty home-channel
 //      field still resolves to the channel that ran the pairing command, and a
 //      user who cannot see that has no way to know where alerts will land.
 
-import { applicationIdFromToken, type DiscordAccessLevel } from "./pairing.js";
+import type { DiscordAccessLevel } from "./pairing.js";
 
 /** Placeholder used before the gateway has told us who the bot is. */
 export const UNKNOWN_BOT_NAME = "the bot";
@@ -32,21 +32,19 @@ export function botSentenceName(botTag: string | null | undefined): string {
 }
 
 export interface MaskedToken {
-  /** The Discord application id, which the invite URL already discloses. */
-  applicationId: string | null;
-  /** Fixed-width dots; deliberately carries no bytes of the real secret. */
+  /** A fixed-width mask plus only the final four characters for recognition. */
   masked: string;
 }
 
 /**
- * A configured token renders as its (public) application id plus dots. That is
- * enough for an operator to recognize *which* bot is configured without any
- * part of the signing secret reaching the frontend, a log, or `bb discord
- * status`.
+ * A configured token renders as dots plus its final four characters. This is
+ * enough to distinguish a recently rotated token without showing its public
+ * application id or a useful portion of the signing secret.
  */
 export function maskBotToken(token: string | undefined): MaskedToken | null {
-  if (!token || !token.trim()) return null;
-  return { applicationId: applicationIdFromToken(token), masked: "••••••••••••" };
+  const trimmed = token?.trim();
+  if (!trimmed) return null;
+  return { masked: `••••••••${trimmed.slice(-4)}` };
 }
 
 export type ValueSource = "setting" | "pairing" | "default" | "none";

@@ -3,7 +3,7 @@ import test from "node:test";
 import { buildPairingStatus } from "./pairing-status.js";
 import { configurationFixture, executionFixture } from "./test-support.js";
 
-/** The signing tail of a Discord bot token; must never appear in the DTO. */
+/** The signing tail of a Discord bot token; it must never appear in full. */
 const SECRET_TOKEN_TAIL = "mNoPqRsTuVwXyZ";
 
 const base = {
@@ -18,8 +18,7 @@ const base = {
   configuration: configurationFixture({
     botToken: {
       configured: true,
-      applicationId: "123456789012345678",
-      masked: "••••••••••••",
+      masked: "••••••••wXyZ",
     },
   }),
   execution: executionFixture(),
@@ -38,12 +37,12 @@ test("the RPC status formats a pairing command without exposing a token", () => 
     expiresAt: 10_000,
     command: "<@123456789012345678> pair ABC-123",
   });
-  // The DTO carries a masked token so the panel can show that one exists; what
-  // it must never carry is any part of the live value.
+  // The DTO carries only a four-character recognition suffix; it must never
+  // carry the full signing tail or token.
   const serialized = JSON.stringify(result);
   assert.equal(serialized.includes("token-value"), false);
   assert.equal(serialized.includes(SECRET_TOKEN_TAIL), false);
-  assert.equal(result.configuration.botToken.masked, "••••••••••••");
+  assert.equal(result.configuration.botToken.masked, "••••••••wXyZ");
 });
 
 test("the RPC never invents a plain-text mention before Discord identifies the bot", () => {

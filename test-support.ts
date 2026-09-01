@@ -10,7 +10,7 @@ export function configurationFixture(
   overrides: Partial<DiscordConfigurationStatus> = {},
 ): DiscordConfigurationStatus {
   return {
-    botToken: { configured: false, applicationId: null, masked: null },
+    botToken: { configured: false, masked: null },
     permissionMode: { value: "auto", label: "Auto" },
     serverAccess: { value: "messages", label: "Messages" },
     destructiveActions: { configured: false, effective: false, blockedReason: null },

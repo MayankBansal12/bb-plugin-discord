@@ -223,7 +223,7 @@ function TokenSetup({ status, now }: { status: DiscordPairingStatus; now: number
           {status.configuration.botToken.configured ? (
             <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
               <span className="text-muted-foreground">Saved token</span>
-              <code>{status.configuration.botToken.applicationId}{status.configuration.botToken.masked}</code>
+              <code>{status.configuration.botToken.masked}</code>
             </div>
           ) : null}
           {failed ? <Notice destructive>{view.setupStep}</Notice> : null}
@@ -327,7 +327,7 @@ function Field({ label, description, children }: { label: string; description?: 
   const id = useId();
   const labelId = `${id}-label`;
   return (
-    <div className="grid gap-2 sm:grid-cols-[10rem_minmax(0,22rem)] sm:items-start sm:gap-4">
+    <div className="grid gap-2 sm:grid-cols-[10rem_minmax(0,1fr)] sm:items-start sm:gap-4">
       <div className="space-y-1">
         <Label id={labelId} htmlFor={id}>{label}</Label>
         {description ? <p className="text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
@@ -358,8 +358,8 @@ function Dropdown({
 }) {
   return (
     <Select value={value} disabled={disabled} onValueChange={onValueChange}>
-      <SelectTrigger id={id}><SelectValue /></SelectTrigger>
-      <SelectContent>
+      <SelectTrigger id={id}><SelectValue className="min-w-0 truncate text-left" /></SelectTrigger>
+      <SelectContent align="end">
         {options.map((option) => (
           <SelectItem key={option.value} value={option.value} disabled={option.disabled}>{option.label}</SelectItem>
         ))}
@@ -375,6 +375,7 @@ interface ConfigDraft {
   modelPinned: boolean;
   permissionMode: "auto" | "accept-edits" | "full" | "project-default";
   serverAccess: "messages" | "full";
+  destructiveActions: boolean;
   homeChannelId: string;
   spawnChannelId: string;
 }
@@ -394,6 +395,7 @@ function draftFrom(status: DiscordPairingStatus): ConfigDraft {
     modelPinned: status.execution.model.source === "setting" && modelValue !== null,
     permissionMode: configuration.permissionMode.value as ConfigDraft["permissionMode"],
     serverAccess: configuration.serverAccess.value,
+    destructiveActions: configuration.destructiveActions.configured,
     homeChannelId: configuration.homeChannel.source === "setting" ? configuration.homeChannel.id ?? "" : "",
     spawnChannelId: configuration.newConversationChannel.source === "setting" ? configuration.newConversationChannel.id ?? "" : "",
   };
@@ -497,14 +499,14 @@ function RoutingFields({
       </Field>
       <Field label="Model" description="Uses the project default unless changed.">
         {(_id) => (
-          <div className="space-y-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             {draft.modelValue ? (
               <ProviderModelPicker
                 value={draft.modelValue}
                 routing={pickerHostId ? { kind: "host", hostId: pickerHostId } : undefined}
                 disabled={disabled}
                 align="end"
-                className="w-full justify-between"
+                className="max-w-full"
                 onChange={(value) => {
                   edit({ modelValue: value, modelPinned: true });
                 }}
@@ -544,6 +546,7 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
       "modelPinned",
       "permissionMode",
       "serverAccess",
+      "destructiveActions",
       "homeChannelId",
       "spawnChannelId",
     ] as const
@@ -556,10 +559,9 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
     setEdits((current) => ({ ...current, ...patch }));
 
   const [savingConfig, setSavingConfig] = useState(false);
-  const [savingDestructive, setSavingDestructive] = useState(false);
   const [unpairing, setUnpairing] = useState(false);
   const [confirmingUnpair, setConfirmingUnpair] = useState(false);
-  const busy = savingConfig || savingDestructive || unpairing;
+  const busy = savingConfig || unpairing;
 
   const run = async (
     setBusy: (value: boolean) => void,
@@ -579,31 +581,51 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
     }
   };
 
-  const saveConfiguration = () =>
-    run(
-      setSavingConfig,
-      () => state.rpc.call("setConfiguration", {
-        defaultProjectId: draft.defaultProjectId || null,
-        machineHostId: draft.machineHostId || null,
-        providerId: draft.modelPinned ? draft.modelValue?.providerId ?? null : null,
-        model: draft.modelPinned ? draft.modelValue?.model ?? null : null,
-        reasoningLevel: draft.modelPinned ? draft.modelValue?.reasoningLevel ?? null : null,
-        serviceTier: draft.modelPinned ? draft.modelValue?.serviceTier ?? null : null,
-        permissionMode: draft.permissionMode,
-        serverAccess: draft.serverAccess,
-        homeChannelId: draft.homeChannelId || null,
-        spawnChannelId: draft.spawnChannelId || null,
-      }),
-      "Discord configuration could not be saved. Check the fields and try again.",
-      () => setEdits({}),
-    );
+  const configurationDirty = (
+    [
+      "defaultProjectId",
+      "machineHostId",
+      "modelPinned",
+      "permissionMode",
+      "serverAccess",
+      "homeChannelId",
+      "spawnChannelId",
+    ] as const
+  ).some((key) => draft[key] !== saved[key]) || (
+    draft.modelPinned && !sameModel(draft.modelValue, saved.modelValue)
+  );
+  const destructiveDirty = draft.destructiveActions !== saved.destructiveActions;
 
-  const toggleDestructive = (enabled: boolean) =>
-    run(
-      setSavingDestructive,
-      () => state.rpc.call("setDestructiveActions", { enabled }),
-      "That permission could not be saved. Try again.",
-    );
+  const saveConfiguration = async () => {
+    setSavingConfig(true);
+    try {
+      if (configurationDirty) {
+        state.setStatus(await state.rpc.call("setConfiguration", {
+          defaultProjectId: draft.defaultProjectId || null,
+          machineHostId: draft.machineHostId || null,
+          providerId: draft.modelPinned ? draft.modelValue?.providerId ?? null : null,
+          model: draft.modelPinned ? draft.modelValue?.model ?? null : null,
+          reasoningLevel: draft.modelPinned ? draft.modelValue?.reasoningLevel ?? null : null,
+          serviceTier: draft.modelPinned ? draft.modelValue?.serviceTier ?? null : null,
+          permissionMode: draft.permissionMode,
+          serverAccess: draft.serverAccess,
+          homeChannelId: draft.homeChannelId || null,
+          spawnChannelId: draft.spawnChannelId || null,
+        }));
+      }
+      if (destructiveDirty) {
+        state.setStatus(await state.rpc.call("setDestructiveActions", {
+          enabled: draft.destructiveActions,
+        }));
+      }
+      state.setError(null);
+      setEdits({});
+    } catch {
+      state.setError("Discord configuration could not be saved. Check the fields and try again.");
+    } finally {
+      setSavingConfig(false);
+    }
+  };
 
   const unpair = () =>
     run(
@@ -616,7 +638,7 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
   const gatewayDown = status.gateway.state !== "connected";
 
   return (
-    <div className="discord-enter space-y-4">
+    <div className={cn("discord-enter space-y-4", dirty && "pb-24")}>
       {status.notice ? <Notice>{status.notice}</Notice> : null}
       {state.error ? <Notice destructive>{state.error}</Notice> : null}
       {gatewayDown ? <Notice destructive>{view.connectionDetail}</Notice> : null}
@@ -640,7 +662,7 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
           </div>
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Bot token</p>
-            <code className="mt-1 block text-sm">{status.configuration.botToken.applicationId}{status.configuration.botToken.masked}</code>
+            <code className="mt-1 block text-sm">{status.configuration.botToken.masked}</code>
           </div>
         </CardContent>
         <CardFooter className="justify-end border-t border-border pt-4">
@@ -687,11 +709,11 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
               ]} />
             )}
           </Field>
-          <Field label="Destructive actions" description={status.configuration.serverAccess.value === "full" ? "Allow channel deletion and member moderation. Applies immediately." : "Save Full access first."}>
+          <Field label="Destructive actions" description={draft.serverAccess === "full" ? "Allow channel deletion and member moderation." : "Choose Full server access first."}>
             {(id) => (
               <div className="flex min-h-9 items-center justify-between rounded-md border border-border px-3">
-                <span className="text-sm text-muted-foreground">{status.configuration.destructiveActions.effective ? "Allowed" : "Not allowed"}</span>
-                <Switch id={id} checked={status.configuration.destructiveActions.configured} disabled={busy || (status.configuration.serverAccess.value !== "full" && !status.configuration.destructiveActions.configured)} onCheckedChange={(checked) => void toggleDestructive(checked)} />
+                <span className="text-sm text-muted-foreground">{draft.destructiveActions && draft.serverAccess === "full" ? "Allowed" : "Not allowed"}</span>
+                <Switch id={id} checked={draft.destructiveActions} disabled={busy || (draft.serverAccess !== "full" && !draft.destructiveActions)} onCheckedChange={(checked) => edit("destructiveActions", checked)} />
               </div>
             )}
           </Field>
@@ -713,12 +735,20 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
         </CardContent>
       </Card>
 
-      <div className="flex items-center justify-end gap-3">
-        <span className="text-xs text-muted-foreground" aria-live="polite">
-          {savingConfig ? "Saving…" : dirty ? "Unsaved changes" : "Saved"}
-        </span>
-        <Button disabled={busy || !dirty} onClick={() => void saveConfiguration()}>Save configuration</Button>
-      </div>
+      {dirty ? (
+        <div className="discord-unsaved-bar" role="status" aria-live="polite">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-amber-400 text-sm font-bold text-amber-950" aria-hidden="true">!</span>
+            <span className="truncate text-sm font-medium text-foreground">
+              {savingConfig ? "Saving your changes…" : "Careful — save these changes before using Discord."}
+            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button variant="ghost" disabled={busy} onClick={() => setEdits({})}>Reset</Button>
+            <Button disabled={busy} onClick={() => void saveConfiguration()}>{savingConfig ? "Saving…" : "Save Changes"}</Button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

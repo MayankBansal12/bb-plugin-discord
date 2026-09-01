@@ -18,13 +18,9 @@ const executionFieldSchema = z.object({
 }).strict();
 
 const configurationSchema = z.object({
-  /**
-   * The application id (already public in the invite URL) plus dots. The live
-   * token never leaves the server.
-   */
+  /** Fixed dots plus a four-character recognition suffix. */
   botToken: z.object({
     configured: z.boolean(),
-    applicationId: z.string().nullable(),
     masked: z.string().nullable(),
   }).strict(),
   permissionMode: z.object({ value: z.string(), label: z.string() }).strict(),

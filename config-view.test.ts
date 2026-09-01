@@ -15,14 +15,13 @@ import {
 // base64url("123456789012345678") — the shape of a real token's first segment.
 const TOKEN = `${Buffer.from("123456789012345678").toString("base64url")}.GhIjKl.mNoPqRsTuVwXyZ`;
 
-test("a configured token shows its application id and never any secret bytes", () => {
+test("a configured token shows only its final four characters", () => {
   const masked = maskBotToken(TOKEN);
   assert.ok(masked);
-  assert.equal(masked.applicationId, "123456789012345678");
-  assert.equal(masked.masked, "••••••••••••");
+  assert.equal(masked.masked, "••••••••wXyZ");
   assert.equal(masked.masked.includes("mNoPqRsTuVwXyZ"), false);
   assert.equal(masked.masked.includes("GhIjKl"), false);
-  assert.equal(TOKEN.includes(masked.masked), false);
+  assert.equal(masked.masked.includes("123456789012345678"), false);
 });
 
 test("an unset token is null rather than a misleading mask", () => {
