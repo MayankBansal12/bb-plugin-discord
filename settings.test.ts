@@ -78,6 +78,8 @@ test("execution selection validates and writes one coherent routing choice", () 
 test("model catalogs are loaded for the selected provider", () => {
   assert.match(serverSource, /bb\.sdk\.providers\.models\(\{\s*hostId,\s*\.\.\.\(providerId \? \{ providerId \} : \{\}\)/);
   assert.match(serverSource, /selection\.providerId \?\? defaults\?\.providerId/);
+  assert.match(serverSource, /catalogModelOptions\(context, selection\.providerId\)/);
+  assert.match(serverSource, /selectedProviderId \?\? context\.defaults\?\.providerId/);
 });
 
 test("the connected configuration handler cannot change token or execution pins", () => {

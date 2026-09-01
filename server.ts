@@ -620,10 +620,14 @@ export default async function plugin(bb: BbPluginApi) {
    */
   const catalogModelOptions = (
     context: ExecutionContext,
+    selectedProviderId: string | null,
   ): DiscordExecutionStatus["models"] => {
     const catalog = context.catalog;
     if (!catalog) return [];
-    const fallbackProviderId = context.defaults?.providerId ?? "";
+    // Provider-scoped catalog responses do not need routeProviderId on every
+    // model, so fall back to the provider used to request this catalog before
+    // falling back to the project's provider.
+    const fallbackProviderId = selectedProviderId ?? context.defaults?.providerId ?? "";
     return catalog.models.flatMap((model) => {
       const providerId = model.routeProviderId ?? fallbackProviderId;
       const provider = catalog.providers.find((entry) => entry.id === providerId);
@@ -693,7 +697,7 @@ export default async function plugin(bb: BbPluginApi) {
         name: machine.name,
         status: machine.status,
       })),
-      models: catalogModelOptions(context),
+      models: catalogModelOptions(context, selection.providerId),
       catalogUnavailable: context.catalog === null,
     };
   };
