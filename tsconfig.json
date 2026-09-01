@@ -17,6 +17,9 @@
       ],
       "@bb/plugin-sdk/app": [
         "./types/bb-plugin-sdk-app.d.ts"
+      ],
+      "@/*": [
+        "./*"
       ]
     },
     "noEmit": true,
@@ -26,6 +29,9 @@
     "server.ts",
     "contract.ts",
     "app.tsx",
+    "app-ui.test.ts",
+    "components/**/*.tsx",
+    "lib/**/*.ts",
     "pairing-ui.ts",
     "pairing-ui.test.ts",
     "pairing-status.ts",

@@ -12,7 +12,6 @@ import {
   generatePairingCode,
   invitePermissions,
   isActiveMappedGuild,
-  legacyAuthorizationGuildId,
   MESSAGE_PERMISSIONS,
   normalizePairingCode,
   PAIRING_CODE_TTL_MS,
@@ -20,7 +19,6 @@ import {
   parsePairCommand,
   permissionBits,
   resolveSpawnPermissionMode,
-  resolveEffectiveGuildId,
   retryDelayMs,
   verifyPairingCode,
 } from "./pairing.js";
@@ -92,19 +90,6 @@ test("unpair clears authorization and every guild-bound forwarding row", () => {
     "DELETE FROM discord_posted_interactions",
     "DELETE FROM discord_interaction_actions",
   ]);
-});
-
-test("legacy settings remain authoritative until the user clears them", () => {
-  assert.equal(
-    legacyAuthorizationGuildId(" guild-legacy ", ["user-1"]),
-    "guild-legacy",
-  );
-  assert.equal(legacyAuthorizationGuildId("guild-legacy", []), null);
-  assert.equal(
-    resolveEffectiveGuildId("guild-paired", "guild-legacy"),
-    "guild-paired",
-  );
-  assert.equal(resolveEffectiveGuildId(undefined, "guild-legacy"), "guild-legacy");
 });
 
 test("lifecycle forwarding requires a current pairing for the mapped guild", () => {

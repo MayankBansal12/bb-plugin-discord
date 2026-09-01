@@ -6,19 +6,22 @@ import {
   pairingPanelView,
   pairingSignalReason,
 } from "./pairing-ui.js";
+import { configurationFixture, executionFixture } from "./test-support.js";
 
 function status(
   overrides: Partial<DiscordPairingStatus> = {},
 ): DiscordPairingStatus {
   return {
     gateway: { state: "disconnected", botTag: null, message: null },
+    botName: "the bot",
     tokenConfigured: false,
     paired: false,
     pairing: null,
     pairingCode: null,
     inviteUrl: null,
-    legacySettingsRequireCleanup: false,
     notice: null,
+    configuration: configurationFixture(),
+    execution: executionFixture(),
     ...overrides,
   };
 }
@@ -37,7 +40,6 @@ test("the panel shows the bot identity and complete stored pairing", () => {
       tokenConfigured: true,
       paired: true,
       pairing: {
-        source: "pairing",
         guildId: "guild-1",
         guildName: "Builders",
         channelId: "channel-1",
@@ -51,31 +53,7 @@ test("the panel shows the bot identity and complete stored pairing", () => {
   );
   assert.equal(view.connectionDetail, "Signed in as BB Bot");
   assert.equal(view.serverLabel, "Builders");
-  assert.equal(view.channelLabel, "#agents");
   assert.equal(view.userLabel, "mayank (user-1)");
-});
-
-test("legacy authorization is explained without inventing channel or user data", () => {
-  const view = pairingPanelView(
-    status({
-      tokenConfigured: true,
-      paired: true,
-      pairing: {
-        source: "legacy-settings",
-        guildId: "guild-1",
-        guildName: null,
-        channelId: null,
-        channelName: null,
-        userId: null,
-        userTag: null,
-        pairedAt: null,
-      },
-    }),
-    1_000,
-  );
-  assert.equal(view.serverLabel, "Configured server");
-  assert.equal(view.channelLabel, "Set by advanced settings");
-  assert.equal(view.userLabel, "Set by advanced settings");
 });
 
 test("pairing-code expiry is visible and becomes actionable", () => {
@@ -95,7 +73,7 @@ test("pairing-code expiry is visible and becomes actionable", () => {
     status({ pairingCode: { code: "ABC-123", command: "pair ABC-123", expiresAt: 1_000 } }),
     1_000,
   );
-  assert.equal(expired.expiryLabel, "Expired — generate a new code");
+  assert.equal(expired.expiryLabel, "Expired. Generate a new code");
 });
 
 test("a parked configuration failure is distinct from connecting and actionable", () => {
