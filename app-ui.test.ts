@@ -31,7 +31,7 @@ test("paired installs retain the disconnect control when the gateway fails", () 
 test("fields own their labels, controls fill the row, and actions have independent busy states", () => {
   assert.match(app, /<Label id=\{labelId\} htmlFor=\{id\}>\{label\}<\/Label>/);
   assert.match(app, /role="group" aria-labelledby=\{labelId\}/);
-  assert.match(app, /sm:grid-cols-\[10rem_minmax\(0,1fr\)\]/);
+  assert.match(app, /sm:grid-cols-\[minmax\(0,3fr\)_minmax\(0,2fr\)\]/);
   for (const state of ["savingConfig", "unpairing"]) {
     assert.match(app, new RegExp(`const \\[${state},`));
   }
@@ -74,6 +74,11 @@ test("the model picker stays compact and every edit uses the fixed save bar", ()
   assert.match(app, />Reset<\/Button>/);
   assert.match(app, /checked=\{draft\.destructiveActions\}/);
   assert.match(app, /edit\("destructiveActions", checked\)/);
+  assert.match(css, /\.discord-unsaved-bar\s*\{[\s\S]*?position: fixed;/);
+  assert.doesNotMatch(css, /\.discord-enter\s*\{[^}]*animation:[^;}]*both/);
+  const unsavedBar = css.match(/\.discord-unsaved-bar\s*\{([\s\S]*?)\n\}/)?.[1];
+  assert.ok(unsavedBar);
+  assert.doesNotMatch(unsavedBar, /\bborder:|\bbackground:|\bbox-shadow:/);
 });
 
 test("configured tokens render only the server-provided suffix mask", () => {

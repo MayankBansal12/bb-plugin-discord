@@ -327,7 +327,7 @@ function Field({ label, description, children }: { label: string; description?: 
   const id = useId();
   const labelId = `${id}-label`;
   return (
-    <div className="grid gap-2 sm:grid-cols-[10rem_minmax(0,1fr)] sm:items-start sm:gap-4">
+    <div className="grid gap-2 sm:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] sm:items-start sm:gap-4">
       <div className="space-y-1">
         <Label id={labelId} htmlFor={id}>{label}</Label>
         {description ? <p className="text-xs leading-relaxed text-muted-foreground">{description}</p> : null}

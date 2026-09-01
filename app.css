@@ -13,7 +13,7 @@
 }
 
 .discord-enter {
-  animation: discord-enter 180ms ease-out both;
+  animation: discord-enter 180ms ease-out;
 }
 
 .discord-unsaved-bar {
@@ -30,10 +30,6 @@
   justify-content: space-between;
   gap: 1rem;
   padding: .75rem .875rem .75rem 1rem;
-  border: 1px solid var(--border);
-  border-radius: .75rem;
-  background: var(--card);
-  box-shadow: 0 12px 36px color-mix(in srgb, var(--foreground) 16%, transparent);
 }
 
 @media (max-width: 32rem) {
