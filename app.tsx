@@ -9,6 +9,7 @@ import {
 import {
   UrlLink,
   definePluginApp,
+  experimental_ProviderModelPicker as ProviderModelPicker,
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
@@ -31,14 +32,20 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import "./app.css";
 
 const REALTIME_CHANNEL = "pairing-state";
 const SAFETY_REFRESH_MS = 60_000;
-const AUTOMATIC = "";
+const AUTOMATIC = "automatic";
 
 type Rpc = ReturnType<typeof useRpc<typeof discordRpcContract>>;
 
@@ -212,6 +219,12 @@ function TokenSetup({ status, now }: { status: DiscordPairingStatus; now: number
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {status.configuration.botToken.configured ? (
+            <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+              <span className="text-muted-foreground">Saved token</span>
+              <code>{status.configuration.botToken.applicationId}{status.configuration.botToken.masked}</code>
+            </div>
+          ) : null}
           {failed ? <Notice destructive>{view.setupStep}</Notice> : null}
           <div className="flex flex-wrap gap-2">
             <UrlLink className="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground hover:bg-accent" href={DISCORD_DEVELOPER_LINKS.applications}>
@@ -270,7 +283,7 @@ function PairingSetup({ state }: { state: DiscordStatusState }) {
         <CardHeader>
           <Badge className="w-fit">Token verified</Badge>
           <CardTitle className="pt-2 text-base">Connect a Discord server</CardTitle>
-          <CardDescription>Invite the verified bot, then authorize one server from the channel you want BB to use for status updates.</CardDescription>
+          <CardDescription>Invite the verified bot, then authorize one server from the channel you want bb to use for updates.</CardDescription>
         </CardHeader>
         <CardContent>
           <ol className="divide-y divide-border">
@@ -311,14 +324,46 @@ function PairingSetup({ state }: { state: DiscordStatusState }) {
  */
 function Field({ label, description, children }: { label: string; description?: string; children: (id: string) => ReactNode }) {
   const id = useId();
+  const labelId = `${id}-label`;
   return (
     <div className="grid gap-2 sm:grid-cols-2 sm:items-start sm:gap-6">
       <div className="space-y-1">
-        <Label htmlFor={id}>{label}</Label>
+        <Label id={labelId} htmlFor={id}>{label}</Label>
         {description ? <p className="text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
       </div>
-      <div className="min-w-0">{children(id)}</div>
+      <div className="min-w-0" role="group" aria-labelledby={labelId}>{children(id)}</div>
     </div>
+  );
+}
+
+interface DropdownOption {
+  value: string;
+  label: string;
+  disabled?: boolean;
+}
+
+function Dropdown({
+  id,
+  value,
+  options,
+  disabled,
+  onValueChange,
+}: {
+  id: string;
+  value: string;
+  options: readonly DropdownOption[];
+  disabled?: boolean;
+  onValueChange: (value: string) => void;
+}) {
+  return (
+    <Select value={value} disabled={disabled} onValueChange={onValueChange}>
+      <SelectTrigger id={id}><SelectValue /></SelectTrigger>
+      <SelectContent>
+        {options.map((option) => (
+          <SelectItem key={option.value} value={option.value} disabled={option.disabled}>{option.label}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -352,17 +397,17 @@ function RoutingFields({ state, saving, setSaving }: { state: DiscordStatusState
     field.source === "setting" ? field.value ?? "" : "";
   const selectedProject = pinned(execution.project);
   const selectedMachine = pinned(execution.machine);
-  const selectedModel = pinned(execution.model);
-  // Options are indexed rather than keyed by model id: two providers on one
-  // machine can legitimately offer the same id, and an index cannot collide.
-  const modelIndex = execution.models.findIndex((option) => option.model === selectedModel);
-  const providers = [...new Map(execution.models.map((option) => [option.providerId, option.providerDisplayName])).entries()];
+  const effectiveModel = execution.models.find((option) =>
+    option.providerId === execution.resolvedProviderId && option.model === execution.model.value
+  );
 
   const save = async (next: {
     defaultProjectId: string | null;
     machineHostId: string | null;
     providerId: string | null;
     model: string | null;
+    reasoningLevel: DiscordPairingStatus["execution"]["resolvedReasoningLevel"];
+    serviceTier: DiscordPairingStatus["execution"]["resolvedServiceTier"];
   }) => {
     setSaving(true);
     try {
@@ -377,40 +422,66 @@ function RoutingFields({ state, saving, setSaving }: { state: DiscordStatusState
 
   return (
     <>
-      <Field label="Project" description="Picks the checkout the agent gets. Defaults to your personal project.">
+      <Field label="Project" description="The checkout used for new requests.">
         {(id) => (
-          <Select id={id} value={selectedProject} disabled={saving} onChange={(event) => void save({ defaultProjectId: event.target.value || null, machineHostId: null, providerId: null, model: null })}>
-            <option value={AUTOMATIC}>Automatic — personal project</option>
-            {execution.projects.map((project) => <option key={project.id} value={project.id}>{project.name}{project.kind === "personal" ? " — personal" : ""}</option>)}
-          </Select>
-        )}
-      </Field>
-      <Field label="Machine" description="Use the project’s machine, or pin one enrolled machine.">
-        {(id) => (
-          <Select id={id} value={selectedMachine} disabled={saving} onChange={(event) => void save({ defaultProjectId: selectedProject || null, machineHostId: event.target.value || null, providerId: null, model: null })}>
-            <option value={AUTOMATIC}>Automatic — project default</option>
-            {execution.machines.map((machine) => <option key={machine.id} value={machine.id}>{machine.name}{machine.status === "connected" ? "" : " — offline"}</option>)}
-          </Select>
-        )}
-      </Field>
-      <Field label="Model" description="Models are filtered to what the selected machine can actually run.">
-        {(id) => (
-          <Select
+          <Dropdown
             id={id}
-            value={modelIndex >= 0 ? String(modelIndex) : AUTOMATIC}
+            value={selectedProject || AUTOMATIC}
             disabled={saving}
-            onChange={(event) => {
-              const option = execution.models[Number(event.target.value)];
-              void save({ defaultProjectId: selectedProject || null, machineHostId: selectedMachine || null, providerId: option?.providerId ?? null, model: option?.model ?? null });
-            }}
-          >
-            <option value={AUTOMATIC}>Automatic — project default</option>
-            {providers.map(([providerId, providerName]) => (
-              <optgroup key={providerId} label={providerName}>
-                {execution.models.map((option, index) => option.providerId === providerId ? <option key={`${providerId}-${option.model}`} value={String(index)}>{option.displayName}{option.isDefault ? " — default" : ""}</option> : null)}
-              </optgroup>
-            ))}
-          </Select>
+            options={[
+              { value: AUTOMATIC, label: `Automatic — ${execution.project.label}` },
+              ...execution.projects.map((project) => ({ value: project.id, label: `${project.name}${project.kind === "personal" ? " — personal" : ""}` })),
+            ]}
+            onValueChange={(value) => void save({ defaultProjectId: value === AUTOMATIC ? null : value, machineHostId: null, providerId: null, model: null, reasoningLevel: null, serviceTier: null })}
+          />
+        )}
+      </Field>
+      <Field label="Machine" description="Where new requests run.">
+        {(id) => (
+          <Dropdown
+            id={id}
+            value={selectedMachine || AUTOMATIC}
+            disabled={saving}
+            options={[
+              { value: AUTOMATIC, label: `Automatic — ${execution.machine.label}` },
+              ...execution.machines.map((machine) => ({ value: machine.id, label: `${machine.name}${machine.status === "connected" ? "" : " — offline"}` })),
+            ]}
+            onValueChange={(value) => void save({ defaultProjectId: selectedProject || null, machineHostId: value === AUTOMATIC ? null : value, providerId: null, model: null, reasoningLevel: null, serviceTier: null })}
+          />
+        )}
+      </Field>
+      <Field label="Model" description="Available models for this machine.">
+        {(_id) => (
+          <div className="space-y-2">
+            {effectiveModel && execution.resolvedProviderId && execution.resolvedReasoningLevel ? (
+              <ProviderModelPicker
+                value={{
+                  providerId: execution.resolvedProviderId,
+                  model: effectiveModel.model,
+                  reasoningLevel: execution.resolvedReasoningLevel,
+                  ...(execution.resolvedServiceTier ? { serviceTier: execution.resolvedServiceTier } : {}),
+                }}
+                routing={execution.machine.value ? { kind: "host", hostId: execution.machine.value } : undefined}
+                disabled={saving}
+                align="end"
+                className="w-full justify-between"
+                onChange={(value) => void save({
+                  defaultProjectId: selectedProject || null,
+                  machineHostId: selectedMachine || null,
+                  providerId: value.providerId,
+                  model: value.model,
+                  reasoningLevel: value.reasoningLevel,
+                  serviceTier: value.serviceTier ?? null,
+                })}
+              />
+            ) : <Notice destructive>The model list is unavailable.</Notice>}
+            <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+              <span>{execution.model.source === "default" ? `Project default — ${execution.model.label}` : "Pinned for Discord"}</span>
+              {execution.model.source === "setting" ? (
+                <Button variant="ghost" size="sm" disabled={saving} onClick={() => void save({ defaultProjectId: selectedProject || null, machineHostId: selectedMachine || null, providerId: null, model: null, reasoningLevel: null, serviceTier: null })}>Use project default</Button>
+              ) : null}
+            </div>
+          </div>
         )}
       </Field>
       {execution.issues.length > 0 ? <Notice destructive>{execution.issues.join(" ")}</Notice> : <p className="text-xs leading-relaxed text-muted-foreground">{saving ? "Saving…" : execution.summary}</p>}
@@ -509,6 +580,10 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Authorized by</p>
             <p className="mt-1 text-sm">{view.userLabel}</p>
           </div>
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Bot token</p>
+            <code className="mt-1 block text-sm">{status.configuration.botToken.applicationId}{status.configuration.botToken.masked}</code>
+          </div>
         </CardContent>
         <CardFooter className="justify-end border-t border-border pt-4">
           {confirmingUnpair ? (
@@ -524,7 +599,7 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Where requests run</CardTitle>
-          <CardDescription>Project, machine and model are validated together and apply as soon as you pick them.</CardDescription>
+          <CardDescription>Choose where Discord requests open in bb.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
           <RoutingFields state={state} saving={savingRouting} setSaving={setSavingRouting} />
@@ -534,25 +609,25 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Permissions</CardTitle>
-          <CardDescription>Control what Discord-started agents can do in BB and in the paired server.</CardDescription>
+          <CardDescription>Control what Discord-started agents can do in bb and in the paired server.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
-          <Field label="BB permission mode" description="Auto asks before risky actions and is the recommended default.">
+          <Field label="bb permission mode" description="Auto asks before risky actions.">
             {(id) => (
-              <Select id={id} value={draft.permissionMode} disabled={busy} onChange={(event) => edit("permissionMode", event.target.value as ConfigDraft["permissionMode"])}>
-                <option value="auto">Auto — ask before risky actions</option>
-                <option value="accept-edits">Accept edits</option>
-                <option value="full">Full</option>
-                <option value="project-default">Project default</option>
-              </Select>
+              <Dropdown id={id} value={draft.permissionMode} disabled={busy} onValueChange={(value) => edit("permissionMode", value as ConfigDraft["permissionMode"])} options={[
+                { value: "auto", label: "Auto — ask before risky actions" },
+                { value: "accept-edits", label: "Accept edits" },
+                { value: "full", label: "Full" },
+                { value: "project-default", label: "Project default" },
+              ]} />
             )}
           </Field>
           <Field label="Discord server access" description="Messages is enough for conversations. Full adds server administration tools and may require inviting the bot again.">
             {(id) => (
-              <Select id={id} value={draft.serverAccess} disabled={busy} onChange={(event) => edit("serverAccess", event.target.value as ConfigDraft["serverAccess"])}>
-                <option value="messages">Messages only</option>
-                <option value="full">Full server access</option>
-              </Select>
+              <Dropdown id={id} value={draft.serverAccess} disabled={busy} onValueChange={(value) => edit("serverAccess", value as ConfigDraft["serverAccess"])} options={[
+                { value: "messages", label: "Messages only" },
+                { value: "full", label: "Full server access" },
+              ]} />
             )}
           </Field>
           <Field label="Destructive server actions" description={status.configuration.serverAccess.value === "full" ? "Allow deleting channels and moderating members. This toggle applies immediately and never changes server access." : "Save Full server access first. Changing this never raises access automatically."}>
@@ -570,7 +645,7 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Channels</CardTitle>
-          <CardDescription>Leave these empty to use the sensible values established during pairing.</CardDescription>
+          <CardDescription>Optional channel overrides.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
           <Field label="Status and alerts" description={`Empty uses ${status.configuration.homeChannel.label} from pairing.`}>
@@ -611,7 +686,7 @@ export default definePluginApp((app) => {
   app.slots.settingsSection({
     id: "setup",
     title: "Discord setup",
-    description: "Verify the bot first. Connection details and settings appear only when they are useful.",
+    description: "Connect Discord and choose how requests run in bb.",
     component: DiscordSettings,
   });
 });

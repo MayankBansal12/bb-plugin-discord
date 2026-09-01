@@ -31,6 +31,8 @@ export interface ExecutionSettingValues {
   machineHostId?: string;
   providerId?: string;
   model?: string;
+  reasoningLevel?: ReasoningLevel;
+  serviceTier?: ServiceTier;
 }
 
 export interface ExecutionSelection {
@@ -38,6 +40,8 @@ export interface ExecutionSelection {
   hostId: string | null;
   providerId: string | null;
   model: string | null;
+  reasoningLevel: ReasoningLevel | null;
+  serviceTier: ServiceTier | null;
 }
 
 /** Empty and whitespace-only settings mean "stay automatic". */
@@ -51,6 +55,8 @@ export function readExecutionSelection(
     hostId: trim(values.machineHostId),
     providerId: trim(values.providerId),
     model: trim(values.model),
+    reasoningLevel: values.reasoningLevel ?? null,
+    serviceTier: values.serviceTier ?? null,
   };
 }
 
@@ -67,6 +73,7 @@ export interface CatalogModel {
   displayName: string;
   isDefault: boolean;
   defaultReasoningEffort: ReasoningLevel;
+  supportedReasoningEfforts: ReasoningLevel[];
   routeProviderId?: string;
 }
 
@@ -74,6 +81,7 @@ export interface CatalogProvider {
   id: string;
   displayName: string;
   available: boolean;
+  serviceTiers: ServiceTier[];
 }
 
 /** One machine's live catalog, as `providers.models({ hostId })` reports it. */
@@ -91,6 +99,8 @@ export interface ProjectInfo {
   kind: "personal" | "standard";
   /** Hosts this project has a checkout on. Empty for the personal project. */
   hostIds: string[];
+  /** Host of the project's default source, when the project has one. */
+  defaultHostId: string | null;
 }
 
 export interface ProjectExecutionDefaults {
@@ -203,7 +213,7 @@ export function resolveExecution(
         ok: false,
         problem: {
           setting: "machineHostId",
-          message: `Machine \`${selection.hostId}\` is not an enrolled BB machine any more. Choose a machine again under Settings → Plugins → Discord → Configuration.`,
+          message: `Machine \`${selection.hostId}\` is not an enrolled bb machine any more. Choose a machine again under Settings → Plugins → Discord → Configuration.`,
         },
       };
     }
@@ -231,7 +241,7 @@ export function resolveExecution(
   const wantedModel = selection.model ?? defaults.model;
   const modelIsPinned = selection.model !== null;
   let model = wantedModel;
-  let reasoningLevel = defaults.reasoningLevel;
+  let reasoningLevel = selection.reasoningLevel ?? defaults.reasoningLevel;
 
   // Validate whenever either half of the pair is pinned. A pinned machine has
   // to be checked even when the model is automatic: inheriting the project's
@@ -291,7 +301,16 @@ export function resolveExecution(
       };
     }
     model = match.model;
-    reasoningLevel = match.defaultReasoningEffort;
+    if (selection.reasoningLevel && !match.supportedReasoningEfforts.includes(selection.reasoningLevel)) {
+      return {
+        ok: false,
+        problem: {
+          setting: "model",
+          message: `Reasoning level \`${selection.reasoningLevel}\` is not available for ${match.displayName}. Pick another level.`,
+        },
+      };
+    }
+    reasoningLevel = selection.reasoningLevel ?? match.defaultReasoningEffort;
   } else if (shouldValidate && !catalog) {
     warnings.push(
       `Could not read the model catalog on ${machineLabel(input)}, so \`${wantedModel}\` is being used unverified.`,
@@ -324,7 +343,7 @@ export function resolveExecution(
       providerId,
       model,
       reasoningLevel,
-      serviceTier: defaults.serviceTier,
+      serviceTier: selection.serviceTier ?? defaults.serviceTier,
       permissionMode,
       warnings,
     },
@@ -339,6 +358,8 @@ export interface SelectionRequest {
   machineHostId: string | null;
   providerId: string | null;
   model: string | null;
+  reasoningLevel: ReasoningLevel | null;
+  serviceTier: ServiceTier | null;
 }
 
 export type SelectionCheck =
@@ -366,6 +387,8 @@ export function validateSelectionRequest(input: {
   const hostId = blank(input.request.machineHostId);
   const model = blank(input.request.model);
   const providerId = model ? blank(input.request.providerId) : null;
+  const reasoningLevel = model ? input.request.reasoningLevel : null;
+  const serviceTier = model ? input.request.serviceTier ?? null : null;
 
   if (hostId) {
     if (!input.machines) {
@@ -378,7 +401,7 @@ export function validateSelectionRequest(input: {
     if (!machine) {
       return {
         ok: false,
-        message: "That machine is no longer enrolled with BB. Reload this page and pick again.",
+        message: "That machine is no longer enrolled with bb. Reload this page and pick again.",
       };
     }
   }
@@ -394,14 +417,14 @@ export function validateSelectionRequest(input: {
   if (!model) {
     return {
       ok: true,
-      selection: { machineHostId: hostId, providerId: null, model: null },
+      selection: { machineHostId: hostId, providerId: null, model: null, reasoningLevel: null, serviceTier: null },
       notice: offlineNotice,
     };
   }
   if (!providerId) {
     return {
       ok: false,
-      message: "Pick the model from the list so BB knows which provider it belongs to.",
+      message: "Pick the model from the list so bb knows which provider it belongs to.",
     };
   }
   if (!input.catalog) {
@@ -419,7 +442,13 @@ export function validateSelectionRequest(input: {
         : "That provider is not installed on the selected machine.",
     };
   }
-  const known = input.catalog.models.some(
+  if (serviceTier && !provider.serviceTiers.includes(serviceTier)) {
+    return {
+      ok: false,
+      message: "That service tier is not available for the selected provider any more. Reload this page and pick again.",
+    };
+  }
+  const known = input.catalog.models.find(
     (entry) =>
       entry.model === model && (entry.routeProviderId ?? providerId) === providerId,
   );
@@ -429,10 +458,22 @@ export function validateSelectionRequest(input: {
       message: "That model is not offered on the selected machine any more. Reload this page and pick again.",
     };
   }
+  if (reasoningLevel && !known.supportedReasoningEfforts.includes(reasoningLevel)) {
+    return {
+      ok: false,
+      message: "That reasoning level is not offered for the selected model any more. Reload this page and pick again.",
+    };
+  }
 
   return {
     ok: true,
-    selection: { machineHostId: hostId, providerId, model },
+    selection: {
+      machineHostId: hostId,
+      providerId,
+      model,
+      reasoningLevel: reasoningLevel ?? known.defaultReasoningEffort,
+      serviceTier,
+    },
     notice: offlineNotice,
   };
 }
@@ -502,8 +543,10 @@ export function buildExecutionView(
       ? machine
         ? `${machine.name}${machine.status === "connected" ? "" : " (offline)"}`
         : selection.hostId
-      : "Wherever the project runs by default",
-    value: selection.hostId,
+      : machine
+        ? `${machine.name} (project default)`
+        : "Wherever the project runs by default",
+    value: selection.hostId ?? machine?.id ?? null,
     source: selection.hostId ? "setting" : "default",
     problem: problemFor("machineHostId"),
   };
@@ -514,7 +557,7 @@ export function buildExecutionView(
         ? `${selection.model} (${selection.providerId})`
         : selection.model
       : defaults
-        ? `${defaults.model} (project default)`
+        ? defaults.model
         : "The project's default model",
     value: selection.model ?? defaults?.model ?? null,
     source: selection.model ? "setting" : "default",
@@ -533,7 +576,7 @@ export function buildExecutionView(
     project: projectField,
     machine: machineField,
     model: modelField,
-    summary: `Discord requests open a BB thread in ${projectField.label}, running on ${machineField.label.toLowerCase()}, with ${modelField.label}.`,
+    summary: `Discord requests open a bb thread in ${projectField.label}, running on ${machineField.label.toLowerCase()}, with ${modelField.label}.`,
     issues,
   };
 }

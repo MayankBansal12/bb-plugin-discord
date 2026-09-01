@@ -66,6 +66,8 @@ import {
   type MachineInfo,
   type ProjectExecutionDefaults,
   type ProjectInfo,
+  type ReasoningLevel,
+  type ServiceTier,
 } from "./execution.js";
 
 const MAX_PROMPT_CHARS = 8000;
@@ -132,6 +134,8 @@ const migrations = [
     spawn_channel_id TEXT,
     home_channel_id TEXT
   )`,
+  `ALTER TABLE discord_config ADD COLUMN reasoning_level TEXT`,
+  `ALTER TABLE discord_config ADD COLUMN service_tier TEXT`,
 ];
 
 interface ThreadMapRow {
@@ -165,6 +169,8 @@ interface DiscordConfigRow {
   machine_host_id: string | null;
   provider_id: string | null;
   model: string | null;
+  reasoning_level: string | null;
+  service_tier: string | null;
   spawn_channel_id: string | null;
   home_channel_id: string | null;
 }
@@ -177,6 +183,8 @@ interface DiscordConfigValues {
   machineHostId?: string;
   providerId?: string;
   model?: string;
+  reasoningLevel?: ReasoningLevel;
+  serviceTier?: ServiceTier;
   spawnChannelId?: string;
   homeChannelId?: string;
 }
@@ -193,9 +201,9 @@ export default async function plugin(bb: BbPluginApi) {
     db.prepare(
       `INSERT INTO discord_config (
         id, permission_mode, server_access, allow_destructive,
-        default_project_id, machine_host_id, provider_id, model,
+        default_project_id, machine_host_id, provider_id, model, reasoning_level, service_tier,
         spawn_channel_id, home_channel_id
-      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         permission_mode = excluded.permission_mode,
         server_access = excluded.server_access,
@@ -204,6 +212,8 @@ export default async function plugin(bb: BbPluginApi) {
         machine_host_id = excluded.machine_host_id,
         provider_id = excluded.provider_id,
         model = excluded.model,
+        reasoning_level = excluded.reasoning_level,
+        service_tier = excluded.service_tier,
         spawn_channel_id = excluded.spawn_channel_id,
         home_channel_id = excluded.home_channel_id`,
     ).run(
@@ -214,6 +224,8 @@ export default async function plugin(bb: BbPluginApi) {
       values.machineHostId ?? null,
       values.providerId ?? null,
       values.model ?? null,
+      values.reasoningLevel ?? null,
+      values.serviceTier ?? null,
       values.spawnChannelId ?? null,
       values.homeChannelId ?? null,
     );
@@ -242,6 +254,8 @@ export default async function plugin(bb: BbPluginApi) {
       machineHostId: optional(row.machine_host_id),
       providerId: optional(row.provider_id),
       model: optional(row.model),
+      reasoningLevel: optional(row.reasoning_level) as ReasoningLevel | undefined,
+      serviceTier: optional(row.service_tier) as ServiceTier | undefined,
       spawnChannelId: optional(row.spawn_channel_id),
       homeChannelId: optional(row.home_channel_id),
     };
@@ -255,7 +269,7 @@ export default async function plugin(bb: BbPluginApi) {
       secret: true,
       label: "Discord bot token",
       description:
-        "Create a bot in the Discord Developer Portal, enable Message Content Intent, then paste its token here. BB stores it as a secret and verifies it before showing connection and configuration.",
+        "Create a bot in the Discord Developer Portal, enable Message Content Intent, then paste its token here. bb stores it securely and verifies it before continuing.",
     },
   });
 
@@ -437,7 +451,7 @@ export default async function plugin(bb: BbPluginApi) {
         maxPermissionMode: host.maxPermissionMode,
       }));
     } catch (error) {
-      bb.log.warn(`Could not list BB machines: ${errorMessage(error)}`);
+      bb.log.warn(`Could not list bb machines: ${errorMessage(error)}`);
       return null;
     }
   };
@@ -461,6 +475,7 @@ export default async function plugin(bb: BbPluginApi) {
         name: project.name,
         kind: project.kind,
         hostIds: [...new Set(project.sources.map((source) => source.hostId))],
+        defaultHostId: project.sources.find((source) => source.isDefault)?.hostId ?? null,
       }));
       const chosen = configuredProjectId
         ? projects.find((project) => project.id === configuredProjectId)
@@ -471,7 +486,7 @@ export default async function plugin(bb: BbPluginApi) {
           projects,
           error: configuredProjectId
             ? `Project \`${configuredProjectId}\` no longer exists. Pick a different project in Settings → Plugins → Discord.`
-            : "No personal BB project is available. Pick a project in Settings → Plugins → Discord.",
+            : "No personal bb project is available. Pick a project in Settings → Plugins → Discord.",
         };
       }
       return {
@@ -483,7 +498,7 @@ export default async function plugin(bb: BbPluginApi) {
       return {
         project: null,
         projects: null,
-        error: `Could not read BB projects: ${errorMessage(error)}`,
+        error: `Could not read bb projects: ${errorMessage(error)}`,
       };
     }
   };
@@ -498,12 +513,16 @@ export default async function plugin(bb: BbPluginApi) {
           id: provider.id,
           displayName: provider.displayName,
           available: provider.available,
+          serviceTiers: provider.capabilities.supportsServiceTier
+            ? (provider.serviceTiers?.map((tier) => tier.id).filter((tier): tier is ServiceTier => tier === "default" || tier === "fast") ?? ["default", "fast"])
+            : [],
         })),
         models: catalog.models.map((model) => ({
           model: model.model,
           displayName: model.displayName,
           isDefault: model.isDefault,
           defaultReasoningEffort: model.defaultReasoningEffort,
+          supportedReasoningEfforts: model.supportedReasoningEfforts.map((entry) => entry.reasoningEffort),
           routeProviderId: model.routeProviderId,
         })),
         permissionCeiling: catalog.permissionCeiling,
@@ -530,11 +549,12 @@ export default async function plugin(bb: BbPluginApi) {
       loadProject(selection.projectId),
       listMachines(),
     ]);
+    const effectiveHostId = selection.hostId ?? project?.defaultHostId ?? null;
     const machine =
-      selection.hostId && machines
-        ? machines.find((entry) => entry.id === selection.hostId) ?? null
+      effectiveHostId && machines
+        ? machines.find((entry) => entry.id === effectiveHostId) ?? null
         : null;
-    const catalog = await loadCatalog(selection.hostId);
+    const catalog = await loadCatalog(effectiveHostId);
     let defaults: ProjectExecutionDefaults | null = null;
     if (project) {
       try {
@@ -601,6 +621,7 @@ export default async function plugin(bb: BbPluginApi) {
           model: model.model,
           displayName: model.displayName,
           isDefault: model.isDefault,
+          defaultReasoningLevel: model.defaultReasoningEffort,
         },
       ];
     });
@@ -613,7 +634,7 @@ export default async function plugin(bb: BbPluginApi) {
     const extraWarnings = [
       context.projectError,
       !context.defaults && context.project
-        ? `Project "${context.project.name}" has no execution defaults yet. Open it once in BB and pick a provider and model.`
+        ? `Project "${context.project.name}" has no execution defaults yet. Open it once in bb and pick a provider and model.`
         : null,
       selection.hostId && !context.machines
         ? "The machine list is unavailable right now, so the pinned machine could not be checked."
@@ -633,6 +654,17 @@ export default async function plugin(bb: BbPluginApi) {
       project: view.project,
       machine: view.machine,
       model: view.model,
+      resolvedProviderId: resolution?.ok
+        ? resolution.plan.providerId
+        : selection.providerId ?? context.defaults?.providerId ?? null,
+      resolvedReasoningLevel: resolution?.ok
+        ? resolution.plan.reasoningLevel
+        : selection.reasoningLevel ?? context.defaults?.reasoningLevel ?? null,
+      resolvedServiceTier: context.catalog?.providers.find(
+        (provider) => provider.id === (resolution?.ok ? resolution.plan.providerId : selection.providerId ?? context.defaults?.providerId),
+      )?.serviceTiers.length
+        ? (resolution?.ok ? resolution.plan.serviceTier : selection.serviceTier ?? context.defaults?.serviceTier ?? null)
+        : null,
       summary: view.summary,
       issues: view.issues,
       projects: (context.projects ?? []).map((project) => ({
@@ -774,14 +806,15 @@ export default async function plugin(bb: BbPluginApi) {
       return pairingStatus();
     },
     /**
-     * Backs the project, machine and model selects. It writes the four routing keys
+     * Backs the project, machine and model controls. It writes the routing keys
      * and nothing else, and it re-checks the requested pair against the live
      * catalog first, because the options the panel rendered can be a minute
      * stale.
      */
     async setExecutionSelection(request) {
       const projectId = request.defaultProjectId?.trim() || null;
-      if (projectId && !(await loadProject(projectId)).project) {
+      const projectResult = await loadProject(projectId);
+      if (!projectResult.project) {
         return pairingStatus("That project is no longer available.");
       }
       const [machines, machine] = [
@@ -789,7 +822,7 @@ export default async function plugin(bb: BbPluginApi) {
         request.machineHostId?.trim() || null,
       ];
       const catalog = request.model?.trim()
-        ? await loadCatalog(machine)
+        ? await loadCatalog(machine ?? projectResult.project.defaultHostId)
         : null;
 
       const check = validateSelectionRequest({ request, machines, catalog });
@@ -803,6 +836,8 @@ export default async function plugin(bb: BbPluginApi) {
         machineHostId: check.selection.machineHostId ?? undefined,
         providerId: check.selection.providerId ?? undefined,
         model: check.selection.model ?? undefined,
+        reasoningLevel: check.selection.reasoningLevel ?? undefined,
+        serviceTier: check.selection.serviceTier ?? undefined,
       });
       return pairingStatus(
         check.notice ??
@@ -1089,10 +1124,10 @@ export default async function plugin(bb: BbPluginApi) {
         }
 
         bb.log.warn(
-          `Discord session ${map.discord_thread_id} disappeared; stopping and unlinking BB thread ${bbThreadId}.`,
+          `Discord session ${map.discord_thread_id} disappeared; stopping and unlinking bb thread ${bbThreadId}.`,
         );
         const notice =
-          "⚠️ **I stopped the linked BB conversation.** Its Discord thread is unavailable. Mention me here to start a new conversation.";
+          "⚠️ **I stopped the linked bb conversation.** Its Discord thread is unavailable. Mention me here to start a new conversation.";
         const parentChannelId = map.discord_parent_channel_id;
         const fallbackChannelId = homeChannelId();
         await detachUnavailableSession({
@@ -1101,7 +1136,7 @@ export default async function plugin(bb: BbPluginApi) {
           },
           onStopError: (stopError) => {
             bb.log.warn(
-              `Could not stop detached BB thread ${bbThreadId}: ${errorMessage(stopError)}`,
+              `Could not stop detached bb thread ${bbThreadId}: ${errorMessage(stopError)}`,
             );
           },
           unlink: () => removeThreadState(bbThreadId),
@@ -1116,7 +1151,7 @@ export default async function plugin(bb: BbPluginApi) {
               await sendToDiscord(
                 map.guild_id,
                 fallbackChannelId,
-                `⚠️ **I stopped a linked BB conversation.** Discord thread <#${map.discord_thread_id}> is unavailable. Mention me in a channel to start a new conversation.`,
+                `⚠️ **I stopped a linked bb conversation.** Discord thread <#${map.discord_thread_id}> is unavailable. Mention me in a channel to start a new conversation.`,
               );
             }
           },
@@ -1149,12 +1184,12 @@ export default async function plugin(bb: BbPluginApi) {
     if (!context.project) {
       throw new Error(
         context.projectError ??
-          "No BB project is available for Discord threads. Pick one in Settings → Plugins → Discord.",
+          "No bb project is available for Discord threads. Pick one in Settings → Plugins → Discord.",
       );
     }
     if (!context.defaults) {
       throw new Error(
-        `Project "${context.project.name}" has no execution defaults. Open it once in BB and choose a provider and model.`,
+        `Project "${context.project.name}" has no execution defaults. Open it once in bb and choose a provider and model.`,
       );
     }
 
@@ -1189,6 +1224,8 @@ export default async function plugin(bb: BbPluginApi) {
       executionInputSources: {
         model: values.model?.trim() ? "explicit" : "client-preference",
         providerId: values.providerId?.trim() ? "explicit" : "client-preference",
+        reasoningLevel: values.reasoningLevel ? "explicit" : "client-preference",
+        serviceTier: values.serviceTier ? "explicit" : "client-preference",
         permissionMode:
           values.permissionMode === "project-default"
             ? "client-preference"
@@ -1277,7 +1314,7 @@ export default async function plugin(bb: BbPluginApi) {
       await sendToDiscord(
         message.guildId,
         message.channelId,
-        "⚠️ I found multiple pending BB requests. Open the BB thread and answer each one there.",
+        "⚠️ I found multiple pending bb requests. Open the bb thread and answer each one there.",
       );
       return true;
     }
@@ -1320,7 +1357,7 @@ export default async function plugin(bb: BbPluginApi) {
       await sendToDiscord(
         message.guildId,
         message.channelId,
-        "Open BB → Settings → Plugins → Discord for a pairing code, then send the command shown there. Prefer the terminal? Run `bb discord pair`.",
+        "Open bb → Settings → Plugins → Discord for a pairing code, then send the command shown there. Prefer the terminal? Run `bb discord pair`.",
       );
       return;
     }
@@ -1347,7 +1384,7 @@ export default async function plugin(bb: BbPluginApi) {
       paired_at: Date.now(),
     });
     const summary = [
-      `✅ **This server is paired with BB through ${botName()}.**`,
+      `✅ **This server is paired with bb through ${botName()}.**`,
       `• Server: ${message.guildName ?? "This server"}`,
       `• Authorized user: ${message.authorTag} (${message.authorId})`,
       `• Home channel: ${message.channelName ? `#${message.channelName}` : "This channel"}`,
@@ -1399,13 +1436,13 @@ export default async function plugin(bb: BbPluginApi) {
         await forwardToBb(existing, message);
       } catch (error) {
         bb.log.error(
-          `Could not forward Discord session ${message.channelId} to BB: ${classifyDiscordError(error).message}`,
+          `Could not forward Discord session ${message.channelId} to bb: ${classifyDiscordError(error).message}`,
         );
         retryMessage(message.messageId);
         await sendToDiscord(
           message.guildId,
           message.channelId,
-          "I couldn’t send that message to BB. Try it once more; if it still fails, check the linked conversation in BB.",
+          "I couldn’t send that message to bb. Try it once more; if it still fails, check the linked conversation in bb.",
         );
       }
       return;
@@ -1422,7 +1459,7 @@ export default async function plugin(bb: BbPluginApi) {
       await sendToDiscord(
         message.guildId,
         message.channelId,
-        "⚠️ I couldn’t start that conversation because the restricted channel setting isn’t a valid Discord channel ID. Update it in BB → Settings → Plugins → Discord, then try again.",
+        "⚠️ I couldn’t start that conversation because the restricted channel setting isn’t a valid Discord channel ID. Update it in bb → Settings → Plugins → Discord, then try again.",
       );
       return;
     }
@@ -1433,7 +1470,7 @@ export default async function plugin(bb: BbPluginApi) {
       await sendToDiscord(
         message.guildId,
         message.channelId,
-        `Start new BB conversations in <#${spawnChannelId}>. Mention me there with your request.`,
+        `Start new bb conversations in <#${spawnChannelId}>. Mention me there with your request.`,
       );
       return;
     }
@@ -1450,7 +1487,7 @@ export default async function plugin(bb: BbPluginApi) {
         await sendToDiscord(
           message.guildId,
           session.id,
-          "✅ **I moved the existing BB conversation to this thread.** Continue here — no mention needed.",
+          "✅ **I moved the existing bb conversation to this thread.** Continue here — no mention needed.",
         );
         await client?.react(
           message.guildId,
@@ -1477,12 +1514,12 @@ export default async function plugin(bb: BbPluginApi) {
         });
       } catch (error) {
         bb.log.error(
-          `Could not forward migrated Discord session ${migrated.discord_thread_id} to BB: ${classifyDiscordError(error).message}`,
+          `Could not forward migrated Discord session ${migrated.discord_thread_id} to bb: ${classifyDiscordError(error).message}`,
         );
         await sendToDiscord(
           message.guildId,
           migrated.discord_thread_id,
-          "This thread is ready, but that message did not reach BB. Please send it here once more.",
+          "This thread is ready, but that message did not reach bb. Please send it here once more.",
         );
       }
       return;
@@ -1497,14 +1534,14 @@ export default async function plugin(bb: BbPluginApi) {
             await bb.sdk.threads.archive({ threadId: spawned.id });
           } catch (cleanupError) {
             bb.log.warn(
-              `Could not archive unlinked BB thread ${spawned.id}: ${classifyDiscordError(cleanupError).message}`,
+              `Could not archive unlinked bb thread ${spawned.id}: ${classifyDiscordError(cleanupError).message}`,
             );
           }
           try {
             await bb.sdk.threads.stop({ threadId: spawned.id });
           } catch (cleanupError) {
             bb.log.warn(
-              `Could not stop unlinked BB thread ${spawned.id}: ${classifyDiscordError(cleanupError).message}`,
+              `Could not stop unlinked bb thread ${spawned.id}: ${classifyDiscordError(cleanupError).message}`,
             );
           }
         },
@@ -1535,12 +1572,12 @@ export default async function plugin(bb: BbPluginApi) {
       );
     } catch (error) {
       bb.log.error(
-        `Could not start a Discord-backed BB session from ${message.channelId}: ${classifyDiscordError(error).message}`,
+        `Could not start a Discord-backed bb session from ${message.channelId}: ${classifyDiscordError(error).message}`,
       );
       await sendToDiscord(
         message.guildId,
         message.channelId,
-        "I couldn’t start this BB conversation. Check the Discord plugin settings in BB, then mention me again.",
+        "I couldn’t start this bb conversation. Check the Discord plugin settings in bb, then mention me again.",
       );
     }
   };
@@ -1616,11 +1653,11 @@ export default async function plugin(bb: BbPluginApi) {
     const map = getMapByBbThread(thread.id);
     if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) return;
     bb.log.error(
-      `Discord-linked BB thread ${thread.id} failed: ${classifyDiscordError(error).message}`,
+      `Discord-linked bb thread ${thread.id} failed: ${classifyDiscordError(error).message}`,
     );
     const sessionPosted = await postToThreadChannel(
       thread.id,
-      `${botName_()} couldn’t finish that turn. Try your request again here; if it keeps failing, check BB for details.`,
+      `${botName_()} couldn’t finish that turn. Try your request again here; if it keeps failing, check bb for details.`,
     );
     const failureHomeChannelId = homeChannelId();
     if (
@@ -1629,13 +1666,13 @@ export default async function plugin(bb: BbPluginApi) {
         failureHomeChannelId,
       )
     ) {
-      const label = map.title?.trim() || "a Discord-linked BB session";
+      const label = map.title?.trim() || "a Discord-linked bb session";
       await sendToDiscord(
         map.guild_id,
         failureHomeChannelId!,
         sessionPosted
-          ? `${botName_()} couldn’t finish a turn in ${label}. Continue in <#${map.discord_thread_id}> or check BB for details.`
-          : `${botName_()} couldn’t finish a turn in ${label}. Open BB for details, then try again.`,
+          ? `${botName_()} couldn’t finish a turn in ${label}. Continue in <#${map.discord_thread_id}> or check bb for details.`
+          : `${botName_()} couldn’t finish a turn in ${label}. Open bb for details, then try again.`,
       );
     }
   });
@@ -1649,8 +1686,8 @@ export default async function plugin(bb: BbPluginApi) {
         map.guild_id,
         map.discord_thread_id,
         map.discord_parent_channel_id
-          ? `🗑️ The linked BB thread was deleted. Mention me in <#${map.discord_parent_channel_id}> to start a new conversation.`
-          : "🗑️ The linked BB thread was deleted. Mention me in this channel to start a new conversation.",
+          ? `🗑️ The linked bb thread was deleted. Mention me in <#${map.discord_parent_channel_id}> to start a new conversation.`
+          : "🗑️ The linked bb thread was deleted. Mention me in this channel to start a new conversation.",
       );
     }
     removeThreadState(thread.id);
@@ -1662,7 +1699,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.cli.register({
     name: "discord",
-    summary: "Manage the Discord BB bridge",
+    summary: "Manage the Discord bb bridge",
     commands: [
       {
         name: "status",
@@ -1866,7 +1903,7 @@ export default async function plugin(bb: BbPluginApi) {
       },
       onSuspectedMissingContentIntent: () => {
         const message =
-          "I couldn’t read Discord message text. Enable Message Content Intent in the Discord Developer Portal → your application → Bot, then restart BB.";
+          "I couldn’t read Discord message text. Enable Message Content Intent in the Discord Developer Portal → your application → Bot, then restart bb.";
         bb.log.warn(message);
         void postToHome(`⚠️ ${message}`);
       },

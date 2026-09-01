@@ -31,6 +31,8 @@ test("the host-rendered settings form asks for the bot token only", () => {
     "machineHostId",
     "providerId",
     "model",
+    "reasoningLevel",
+    "serviceTier",
     "spawnChannelId",
     "homeChannelId",
     "guildId",
@@ -54,7 +56,7 @@ test("the destructive-actions handler writes exactly one config value", () => {
   assert.match(handler, /accessLevel\(\) !== "full"/);
 });
 
-test("execution selection is validated and writes only its four routing values", () => {
+test("execution selection validates and writes one coherent routing choice", () => {
   const handler = rpcHandler("setExecutionSelection");
   assert.match(handler, /validateSelectionRequest\(/);
   assert.match(handler, /if \(!check\.ok\)/);
@@ -65,14 +67,15 @@ test("execution selection is validated and writes only its four routing values",
       .split("\n")
       .map((line) => line.trim().split(":")[0])
       .filter(Boolean),
-    ["defaultProjectId", "machineHostId", "providerId", "model"],
+    ["defaultProjectId", "machineHostId", "providerId", "model", "reasoningLevel", "serviceTier"],
   );
+  assert.match(handler, /loadCatalog\(machine \?\? projectResult\.project\.defaultHostId\)/);
 });
 
 test("the connected configuration handler cannot change token or execution pins", () => {
   const handler = rpcHandler("setConfiguration");
   assert.match(handler, /normalizeOptionalDiscordSnowflake/);
-  for (const key of ["botToken", "machineHostId", "providerId", "model", "allowDestructiveServerActions"]) {
+  for (const key of ["botToken", "machineHostId", "providerId", "model", "reasoningLevel", "serviceTier", "allowDestructiveServerActions"]) {
     assert.doesNotMatch(handler, new RegExp(`${key}\\s*:`));
   }
 });

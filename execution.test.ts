@@ -18,6 +18,7 @@ const personal: ProjectInfo = {
   name: "Personal",
   kind: "personal",
   hostIds: [],
+  defaultHostId: null,
 };
 
 const repo: ProjectInfo = {
@@ -25,6 +26,7 @@ const repo: ProjectInfo = {
   name: "Checkout",
   kind: "standard",
   hostIds: ["host_laptop"],
+  defaultHostId: "host_laptop",
 };
 
 const defaults: ProjectExecutionDefaults = {
@@ -45,7 +47,7 @@ const laptop: MachineInfo = {
 function catalog(overrides: Partial<MachineCatalog> = {}): MachineCatalog {
   return {
     providers: [
-      { id: "anthropic", displayName: "Anthropic", available: true },
+      { id: "anthropic", displayName: "Anthropic", available: true, serviceTiers: ["default", "fast"] },
     ],
     models: [
       {
@@ -53,12 +55,14 @@ function catalog(overrides: Partial<MachineCatalog> = {}): MachineCatalog {
         displayName: "Opus 5",
         isDefault: false,
         defaultReasoningEffort: "high",
+        supportedReasoningEfforts: ["medium", "high"],
       },
       {
         model: "claude-sonnet-5",
         displayName: "Sonnet 5",
         isDefault: true,
         defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: ["low", "medium", "high"],
       },
     ],
     permissionCeiling: "full",
@@ -75,7 +79,7 @@ test("empty settings mean automatic, not empty strings", () => {
       providerId: undefined,
       model: "",
     }),
-    { projectId: null, hostId: null, providerId: null, model: null },
+    { projectId: null, hostId: null, providerId: null, model: null, reasoningLevel: null, serviceTier: null },
   );
 });
 
@@ -171,7 +175,7 @@ test("a signed-out provider on the chosen machine names the machine", () => {
     permissionMode: "auto",
     machine: laptop,
     catalog: catalog({
-      providers: [{ id: "anthropic", displayName: "Anthropic", available: false }],
+      providers: [{ id: "anthropic", displayName: "Anthropic", available: false, serviceTiers: ["default", "fast"] }],
     }),
   });
   assert.ok(!result.ok);
@@ -266,7 +270,7 @@ test("the view labels automatic values instead of showing blanks", () => {
   assert.equal(view.project.source, "default");
   assert.equal(view.project.label, "Personal (personal)");
   assert.equal(view.machine.label, "Wherever the project runs by default");
-  assert.equal(view.model.label, "claude-sonnet-5 (project default)");
+  assert.equal(view.model.label, "claude-sonnet-5");
   assert.deepEqual(view.issues, []);
   assert.match(view.summary, /Personal/);
 });
@@ -316,6 +320,7 @@ test("an inherited project-default model absent on the chosen machine is refused
           displayName: "Opus 5",
           isDefault: true,
           defaultReasoningEffort: "high",
+          supportedReasoningEfforts: ["medium", "high"],
         },
       ],
     }),
@@ -408,6 +413,8 @@ test("clearing both selects is accepted and normalizes to Automatic", () => {
     machineHostId: null,
     providerId: null,
     model: null,
+    reasoningLevel: null,
+    serviceTier: null,
   });
 });
 
@@ -422,8 +429,63 @@ test("a valid machine and model pair is accepted and trimmed", () => {
     machineHostId: "host_laptop",
     providerId: "anthropic",
     model: "claude-opus-5",
+    reasoningLevel: "high",
+    serviceTier: null,
   });
   assert.equal(check.notice, null);
+});
+
+test("the picker reasoning level is validated and preserved", () => {
+  const check = validateSelectionRequest({
+    request: {
+      machineHostId: "host_laptop",
+      providerId: "anthropic",
+      model: "claude-sonnet-5",
+      reasoningLevel: "low",
+      serviceTier: "fast",
+    },
+    machines,
+    catalog: catalog(),
+  });
+  assert.ok(check.ok);
+  assert.equal(check.selection.reasoningLevel, "low");
+  assert.equal(check.selection.serviceTier, "fast");
+
+  const resolved = resolveExecution({
+    selection: readExecutionSelection({
+      machineHostId: "host_laptop",
+      providerId: "anthropic",
+      model: "claude-sonnet-5",
+      reasoningLevel: "low",
+      serviceTier: "fast",
+    }),
+    project: personal,
+    defaults,
+    permissionMode: "auto",
+    machine: laptop,
+    catalog: catalog(),
+  });
+  assert.ok(resolved.ok);
+  assert.equal(resolved.plan.reasoningLevel, "low");
+  assert.equal(resolved.plan.serviceTier, "fast");
+});
+
+test("a provider without service tiers rejects a stale fast-tier request", () => {
+  const check = validateSelectionRequest({
+    request: {
+      machineHostId: "host_laptop",
+      providerId: "anthropic",
+      model: "claude-sonnet-5",
+      reasoningLevel: "medium",
+      serviceTier: "fast",
+    },
+    machines,
+    catalog: catalog({
+      providers: [{ id: "anthropic", displayName: "Anthropic", available: true, serviceTiers: [] }],
+    }),
+  });
+  assert.equal(check.ok, false);
+  assert.match(check.ok ? "" : check.message, /service tier/);
 });
 
 test("an offline machine saves but says the requests will be refused", () => {

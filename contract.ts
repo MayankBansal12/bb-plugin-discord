@@ -56,6 +56,11 @@ const executionSchema = z.object({
   project: executionFieldSchema,
   machine: executionFieldSchema,
   model: executionFieldSchema,
+  resolvedProviderId: z.string().nullable(),
+  resolvedReasoningLevel: z.enum([
+    "none", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode",
+  ]).nullable(),
+  resolvedServiceTier: z.enum(["default", "fast"]).nullable(),
   summary: z.string(),
   issues: z.array(z.string()),
   projects: z.array(
@@ -81,6 +86,9 @@ const executionSchema = z.object({
       model: z.string(),
       displayName: z.string(),
       isDefault: z.boolean(),
+      defaultReasoningLevel: z.enum([
+        "none", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode",
+      ]),
     }).strict(),
   ),
   /** True when the catalog could not be read; the lists above are then stale. */
@@ -140,6 +148,10 @@ export const discordRpcContract = defineRpcContract({
       machineHostId: z.string().nullable(),
       providerId: z.string().nullable(),
       model: z.string().nullable(),
+      reasoningLevel: z.enum([
+        "none", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode",
+      ]).nullable(),
+      serviceTier: z.enum(["default", "fast"]).nullable(),
     }).strict(),
     output: pairingStatusSchema,
   },
