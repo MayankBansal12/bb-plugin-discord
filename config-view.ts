@@ -159,6 +159,7 @@ export function accessLevelLabel(level: DiscordAccessLevel): string {
 }
 
 export const PERMISSION_MODE_LABELS: Record<string, string> = {
+  "machine-default": "Machine default",
   auto: "Auto (ask before risky actions)",
   "accept-edits": "Accept edits",
   full: "Full (no approval prompts)",
@@ -166,5 +167,8 @@ export const PERMISSION_MODE_LABELS: Record<string, string> = {
 };
 
 export function permissionModeLabel(mode: string | undefined): string {
-  return PERMISSION_MODE_LABELS[mode ?? "auto"] ?? PERMISSION_MODE_LABELS.auto!;
+  return (
+    PERMISSION_MODE_LABELS[mode ?? "machine-default"] ??
+    PERMISSION_MODE_LABELS["machine-default"]!
+  );
 }

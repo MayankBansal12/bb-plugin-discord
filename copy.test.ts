@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 const read = (path: string): string =>
@@ -24,10 +24,17 @@ test("README leads from install through token setup and pairing in order", () =>
   assert.match(readme, /<@123456789012345678> pair ABC-123/);
 });
 
-test("public copy uses the bb wordmark and keeps a place for demo media", () => {
+test("public copy uses the bb wordmark and includes the demo media", () => {
   assert.doesNotMatch(readme, /\bBB\b/);
   assert.match(readme, /## Demo/);
-  assert.match(readme, /Suggested location: docs\/images\//);
+  for (const image of [
+    "test-run-discord.png",
+    "bb-bot-pair.png",
+    "discord-settings.png",
+  ]) {
+    assert.match(readme, new RegExp(`docs/images/${image.replace(".", "\\.")}`));
+    assert.ok(existsSync(new URL(`./docs/images/${image}`, import.meta.url)));
+  }
   assert.equal(packageJson.description, packageJson.bb.description);
   assert.match(packageJson.description, /\bbb\b/);
   assert.doesNotMatch(packageJson.description, /\bBB\b/);

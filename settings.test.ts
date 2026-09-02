@@ -44,8 +44,12 @@ test("the host-rendered settings form asks for the bot token only", () => {
   }
 });
 
-test("durable configuration defaults to least privilege and automatic routing", () => {
-  assert.match(serverSource, /permissionMode: "auto"/);
+test("durable configuration follows the selected machine and keeps Discord access narrow", () => {
+  assert.match(serverSource, /permissionMode: "machine-default"/);
+  assert.match(
+    serverSource,
+    /context\.catalog\?\.permissionCeiling \?\? context\.machine\?\.maxPermissionMode/,
+  );
   assert.match(serverSource, /serverAccess: "messages"/);
   assert.match(serverSource, /allowDestructiveServerActions: false/);
   assert.match(migrationsSource, /CREATE TABLE IF NOT EXISTS discord_config/);

@@ -227,22 +227,30 @@ export function inviteUrlFromToken(
 // ---------------------------------------------------------------------------
 
 export type BbPermissionMode = "accept-edits" | "auto" | "full";
-export type PermissionModeSetting = BbPermissionMode | "project-default";
+export type PermissionModeSetting =
+  | BbPermissionMode
+  | "machine-default"
+  | "project-default";
 
 /**
- * Auto keeps workspace sandboxing while avoiding routine user prompts, which
- * makes it the practical default for a remote Discord conversation. Existing
- * explicit choices always win.
+ * New Discord configurations follow the selected machine's access ceiling.
+ * If that value is temporarily unavailable, full access is the explicit
+ * fallback. Existing explicit choices and the legacy project-default option
+ * still win when configured.
  */
 export function resolveSpawnPermissionMode(
   configured: string | undefined,
   projectDefault: BbPermissionMode,
+  machineDefault?: BbPermissionMode | null,
 ): BbPermissionMode {
+  if (!configured || configured === "machine-default") {
+    return machineDefault ?? "full";
+  }
   if (configured === "project-default") return projectDefault;
   if (configured === "accept-edits" || configured === "auto" || configured === "full") {
     return configured;
   }
-  return "auto";
+  return machineDefault ?? "full";
 }
 
 // ---------------------------------------------------------------------------

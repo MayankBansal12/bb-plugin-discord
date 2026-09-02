@@ -375,7 +375,12 @@ interface ConfigDraft {
   machineHostId: string;
   modelValue: ExperimentalProviderModelPickerValue | null;
   modelPinned: boolean;
-  permissionMode: "auto" | "accept-edits" | "full" | "project-default";
+  permissionMode:
+    | "machine-default"
+    | "auto"
+    | "accept-edits"
+    | "full"
+    | "project-default";
   serverAccess: "messages" | "full";
   destructiveActions: boolean;
   homeChannelId: string;
@@ -731,9 +736,13 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
           <CardDescription>Control agent and Discord access.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
-          <Field label="bb permission mode" description="Auto asks before risky actions.">
+          <Field
+            label="bb permission mode"
+            description="Machine default follows the selected machine's access limit and falls back to Full if it cannot be read."
+          >
             {(id) => (
               <Dropdown id={id} value={draft.permissionMode} disabled={busy} onValueChange={(value) => edit("permissionMode", value as ConfigDraft["permissionMode"])} options={[
+                { value: "machine-default", label: "Machine default" },
                 { value: "auto", label: "Auto (ask before risky actions)" },
                 { value: "accept-edits", label: "Accept edits" },
                 { value: "full", label: "Full" },

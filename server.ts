@@ -190,7 +190,7 @@ export default async function plugin(bb: BbPluginApi) {
       | undefined;
     if (!row) {
       const initial: DiscordConfigValues = {
-        permissionMode: "auto",
+        permissionMode: "machine-default",
         serverAccess: "messages",
         allowDestructiveServerActions: false,
       };
@@ -200,7 +200,7 @@ export default async function plugin(bb: BbPluginApi) {
     const optional = (value: string | null): string | undefined =>
       value?.trim() ? value.trim() : undefined;
     return {
-      permissionMode: row.permission_mode || "auto",
+      permissionMode: row.permission_mode || "machine-default",
       serverAccess: row.server_access === "full" ? "full" : "messages",
       allowDestructiveServerActions: row.allow_destructive === 1,
       defaultProjectId: optional(row.default_project_id),
@@ -560,6 +560,7 @@ export default async function plugin(bb: BbPluginApi) {
       permissionMode: resolveSpawnPermissionMode(
         values.permissionMode,
         context.defaults.permissionMode,
+        context.catalog?.permissionCeiling ?? context.machine?.maxPermissionMode,
       ),
       machine: context.machine,
       catalog: context.catalog,
@@ -677,7 +678,7 @@ export default async function plugin(bb: BbPluginApi) {
         masked: token?.masked ?? null,
       },
       permissionMode: {
-        value: cached.permissionMode ?? "auto",
+        value: cached.permissionMode ?? "machine-default",
         label: permissionModeLabel(cached.permissionMode),
       },
       serverAccess: { value: level, label: accessLevelLabel(level) },
@@ -1222,6 +1223,7 @@ export default async function plugin(bb: BbPluginApi) {
       permissionMode: resolveSpawnPermissionMode(
         values.permissionMode,
         context.defaults.permissionMode,
+        context.catalog?.permissionCeiling ?? context.machine?.maxPermissionMode,
       ),
       machine: context.machine,
       catalog: context.catalog,
@@ -1249,7 +1251,8 @@ export default async function plugin(bb: BbPluginApi) {
         reasoningLevel: values.reasoningLevel ? "explicit" : "client-preference",
         serviceTier: values.serviceTier ? "explicit" : "client-preference",
         permissionMode:
-          values.permissionMode === "project-default"
+          values.permissionMode === "project-default" ||
+          values.permissionMode === "machine-default"
             ? "client-preference"
             : "explicit",
       },

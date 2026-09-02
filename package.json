@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-discord",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Run bb agent threads from Discord, answer approvals, and manage your server with permission-gated tools.",
   "type": "module",
   "repository": {

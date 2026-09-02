@@ -6,21 +6,26 @@ With optional full server access, bb agents can also read and manage the paired 
 
 ## Demo
 
-Demo screenshots and a short setup walkthrough will be added before the marketplace submission.
+### Run bb from a Discord conversation
 
-<!--
-Add the final marketplace media here when it is ready:
+Mention the bot in a channel to start a dedicated thread, then keep chatting
+there while bb works and reports back.
 
-1. Product overview: Discord request → dedicated thread → bb response.
-2. Setup walkthrough: token → invite → pairing command → connected state.
-3. Optional short clip: resolving a bb approval from Discord.
+![A Discord request opening a dedicated thread and returning a bb status update](docs/images/test-run-discord.png)
 
-Suggested location: docs/images/
+### Pair your Discord server
 
-For the bb Community listing, up to six screenshots can be copied into the
-marketplace repository. Each must be PNG, JPEG, or WebP, at least 1200 pixels
-wide, and no larger than 2 MiB.
--->
+Create a one-time pairing code in bb and send it to the bot in the server you
+want to connect.
+
+![A Discord server successfully paired with bb](docs/images/bb-bot-pair.png)
+
+### Configure everything in bb
+
+Choose the project, machine, model, permission mode, channels, and Discord
+server access from the plugin settings page.
+
+![Discord plugin configuration in bb](docs/images/discord-settings.png)
 
 ## Install
 
@@ -144,7 +149,7 @@ Changing the machine resets a pinned model because model availability belongs to
 | Project | Personal project | The checkout and project defaults used by new bb threads. |
 | Machine | Project default | The enrolled machine that runs new requests. |
 | Model | Project default | The provider, model, reasoning level, and service tier. |
-| bb permission mode | `auto` | The approval and sandbox policy for Discord-started threads. |
+| bb permission mode | Machine default | Follows the selected machine's access limit; falls back to `full` if the limit cannot be read. |
 | Discord access | Messages only | Which Discord tools bb agents receive. |
 | Destructive actions | Off | Whether full-access agents may delete channels or moderate members. |
 | Status and alerts | Pairing channel | Where connection and failure notices are posted. |
@@ -160,13 +165,14 @@ This plugin can start agent work on a machine running bb. Treat access to the pa
 - Only the paired server is accepted.
 - Only the person who paired and explicitly allowlisted users can drive bb.
 - New conversations require an explicit bot mention.
-- Discord-started threads use `auto` permission mode by default. The selected machine's permission ceiling can only reduce that access.
+- Discord-started threads use the selected machine's access limit by default. If that value cannot be read, the plugin requests `full`; bb still enforces the machine's permission ceiling when the thread starts.
 - The bot token stays in bb's permission-restricted plugin secret store. The frontend receives only a fixed mask and the final four characters.
 - Prompts are capped at 8,000 characters, and Discord message IDs are deduplicated.
 - Discord-started threads use the personal project unless you explicitly choose another project. There is no “first available project” fallback.
 
 Permission modes:
 
+- `machine-default` follows the selected machine's access limit and falls back to `full` when that value is unavailable.
 - `auto` keeps workspace sandboxing and lets bb decide when approval is required.
 - `accept-edits` asks the user to review escalations.
 - `full` bypasses sandboxing and approval prompts when the machine also permits it.
