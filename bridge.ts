@@ -4,7 +4,7 @@ export interface DiscordMessageLocation {
 }
 
 export interface DiscordRouteMapping {
-  /** Discord channel or thread that currently owns the BB conversation. */
+  /** Discord channel or thread that currently owns the bb conversation. */
   discordChannelId: string;
   /** Null identifies a pre-session row created by older plugin versions. */
   discordParentChannelId: string | null;
@@ -128,8 +128,8 @@ export function parseDiscordApprovalActionId(
 }
 
 /**
- * One bounded timer for every mapped BB thread that is currently working.
- * A tick never overlaps the previous one, even when Discord or BB is slow.
+ * One bounded timer for every mapped bb thread that is currently working.
+ * A tick never overlaps the previous one, even when Discord or bb is slow.
  */
 export class ActiveThreadWatcher {
   private readonly targets = new Set<string>();
@@ -293,7 +293,7 @@ export function routeCreatesSession(route: DiscordInboundRoute): boolean {
   return route.kind === "start-session" || route.kind === "migrate-legacy-session";
 }
 
-/** Spawn BB first so a failed spawn can never leave a Discord session behind. */
+/** Spawn bb first so a failed spawn can never leave a Discord session behind. */
 export async function prepareDiscordSession<TThread, TSession>(operations: {
   spawnBbThread: () => Promise<TThread>;
   createDiscordSession: () => Promise<TSession>;
@@ -317,7 +317,7 @@ export function shouldAlertHomeForFailure(
 }
 
 /**
- * Decide whether an authorized inbound message belongs to a BB conversation.
+ * Decide whether an authorized inbound message belongs to a bb conversation.
  * Normal channels are mention-only launchers; Discord threads are sessions.
  */
 export function routeDiscordMessage(
@@ -339,13 +339,13 @@ export function routeDiscordMessage(
 }
 
 /**
- * A compact Discord-native title; never leaks BB's internal thread id. The
+ * A compact Discord-native title; never leaks bb's internal thread id. The
  * fallback is the bot's own name so an empty request does not produce a thread
  * named after a product nobody in the server recognizes.
  */
 export function discordSessionName(
   request: string,
-  botName = "BB",
+  botName = "bb",
 ): string {
   const compact = request.replace(/\s+/g, " ").trim();
   return truncate(compact || `${botName} conversation`, 100);
@@ -382,7 +382,7 @@ export function resolveInteractionReply(
         kind: "error",
         message:
           payload.questions.length === 1
-            ? "Reply with an answer to the pending BB question."
+            ? "Reply with an answer to the pending bb question."
             : "Reply on separate lines as `1: answer`, `2: answer`, and so on.",
       };
     }
@@ -432,7 +432,7 @@ export function resolveInteractionReply(
   };
 }
 
-/** Resolve exactly one decision advertised by BB; shared by text and buttons. */
+/** Resolve exactly one decision advertised by bb; shared by text and buttons. */
 export function resolveApprovalDecision(
   interaction: PendingInteractionLike,
   decision: ApprovalDecision,
@@ -472,7 +472,7 @@ export function describePendingInteraction(
       .join("\n");
   }
   return ("title" in payload ? payload.title : undefined) ??
-    `BB is waiting on ${payload.kind}.`;
+    `bb is waiting on ${payload.kind}.`;
 }
 
 /** The one source of truth for choices advertised in Discord. */
@@ -488,7 +488,7 @@ export function pendingInteractionReplyInstructions(
     (decision) => APPROVAL_REPLY_BY_DECISION[decision],
   );
   if (offered.length === 0) {
-    return "Open BB to answer this approval request.";
+    return "Open bb to answer this approval request.";
   }
   return `Reply ${joinChoices(offered)}.`;
 }

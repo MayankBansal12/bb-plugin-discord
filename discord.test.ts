@@ -162,7 +162,7 @@ test("unauthorized approval clicks are ephemeral and never reach BB", async () =
 
   assert.equal(handled, false);
   assert.deepEqual(reply, {
-    content: "You are not authorized to approve this BB request.",
+    content: "You are not authorized to approve this bb request.",
     ephemeral: true,
   });
 });

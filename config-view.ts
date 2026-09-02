@@ -16,7 +16,7 @@ export const UNKNOWN_BOT_NAME = "the bot";
 
 /**
  * Discord tags are `name` (new usernames) or `name#1234` (legacy). Discord
- * copy should read as the bot the operator invited, not as "BB".
+ * copy should read as the bot the operator invited, not as "bb".
  */
 export function botDisplayName(botTag: string | null | undefined): string {
   const trimmed = botTag?.trim();

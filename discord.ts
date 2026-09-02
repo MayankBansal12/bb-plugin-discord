@@ -185,7 +185,7 @@ export class DiscordChannelBoundaryError extends Error {
   override readonly name = "DiscordChannelBoundaryError";
 }
 
-/** Permanent channel failures should detach a live Discord/BB session. */
+/** Permanent channel failures should detach a live Discord/bb session. */
 export function isUnavailableDiscordChannelError(error: unknown): boolean {
   const kind = classifyDiscordError(error).kind;
   return (
@@ -671,14 +671,14 @@ export class DiscordClient {
       !this.opts.isAuthorized(guildId, interaction.user.id)
     ) {
       await interaction.reply({
-        content: "You are not authorized to approve this BB request.",
+        content: "You are not authorized to approve this bb request.",
         ephemeral: true,
       });
       return;
     }
     if (!this.opts.onApprovalAction) {
       await interaction.reply({
-        content: "This BB approval bridge is not available right now.",
+        content: "This bb approval bridge is not available right now.",
         ephemeral: true,
       });
       return;
@@ -701,7 +701,7 @@ export class DiscordClient {
       );
       await interaction.followUp({
         content:
-          "BB could not apply that decision yet. The approval is still open; please try again.",
+          "bb could not apply that decision yet. The approval is still open; please try again.",
         ephemeral: true,
       });
       return;
@@ -731,7 +731,7 @@ export class DiscordClient {
         guildChannel.archived
       ) {
         try {
-          await guildChannel.setArchived(false, "Resume linked BB conversation");
+          await guildChannel.setArchived(false, "Resume linked bb conversation");
         } catch (error) {
           throw toFriendlyError(error);
         }

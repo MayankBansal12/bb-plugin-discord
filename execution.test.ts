@@ -402,7 +402,7 @@ const machines = [laptop, { ...laptop, id: "host_box", name: "Build box", status
 
 test("clearing both selects is accepted and normalizes to Automatic", () => {
   const check = validateSelectionRequest({
-    request: { machineHostId: "", providerId: "anthropic", model: "  " },
+    request: { machineHostId: "", providerId: "anthropic", model: "  ", reasoningLevel: null, serviceTier: null },
     machines,
     catalog: catalog(),
   });
@@ -420,7 +420,7 @@ test("clearing both selects is accepted and normalizes to Automatic", () => {
 
 test("a valid machine and model pair is accepted and trimmed", () => {
   const check = validateSelectionRequest({
-    request: { machineHostId: " host_laptop ", providerId: "anthropic", model: "claude-opus-5" },
+    request: { machineHostId: " host_laptop ", providerId: "anthropic", model: "claude-opus-5", reasoningLevel: null, serviceTier: null },
     machines,
     catalog: catalog(),
   });
@@ -490,7 +490,7 @@ test("a provider without service tiers rejects a stale fast-tier request", () =>
 
 test("an offline machine saves but says the requests will be refused", () => {
   const check = validateSelectionRequest({
-    request: { machineHostId: "host_box", providerId: null, model: null },
+    request: { machineHostId: "host_box", providerId: null, model: null, reasoningLevel: null, serviceTier: null },
     machines,
     catalog: null,
   });
@@ -501,24 +501,24 @@ test("an offline machine saves but says the requests will be refused", () => {
 
 test("a stale option posted from the panel is rejected, not written", () => {
   const goneMachine = validateSelectionRequest({
-    request: { machineHostId: "host_removed", providerId: null, model: null },
+    request: { machineHostId: "host_removed", providerId: null, model: null, reasoningLevel: null, serviceTier: null },
     machines,
     catalog: null,
   });
   assert.equal(goneMachine.ok, false);
 
   const goneModel = validateSelectionRequest({
-    request: { machineHostId: "host_laptop", providerId: "anthropic", model: "claude-retired-3" },
+    request: { machineHostId: "host_laptop", providerId: "anthropic", model: "claude-retired-3", reasoningLevel: null, serviceTier: null },
     machines,
     catalog: catalog(),
   });
   assert.equal(goneModel.ok, false);
 
   const signedOut = validateSelectionRequest({
-    request: { machineHostId: "host_laptop", providerId: "anthropic", model: "claude-opus-5" },
+    request: { machineHostId: "host_laptop", providerId: "anthropic", model: "claude-opus-5", reasoningLevel: null, serviceTier: null },
     machines,
     catalog: catalog({
-      providers: [{ id: "anthropic", displayName: "Anthropic", available: false }],
+      providers: [{ id: "anthropic", displayName: "Anthropic", available: false, serviceTiers: [] }],
     }),
   });
   assert.equal(signedOut.ok, false);
@@ -528,7 +528,7 @@ test("a stale option posted from the panel is rejected, not written", () => {
 
 test("a model without its provider is rejected rather than guessed", () => {
   const check = validateSelectionRequest({
-    request: { machineHostId: null, providerId: null, model: "claude-opus-5" },
+    request: { machineHostId: null, providerId: null, model: "claude-opus-5", reasoningLevel: null, serviceTier: null },
     machines,
     catalog: catalog(),
   });
@@ -539,7 +539,7 @@ test("a model without its provider is rejected rather than guessed", () => {
 
 test("an unverifiable catalog refuses a model instead of saving it blind", () => {
   const check = validateSelectionRequest({
-    request: { machineHostId: "host_laptop", providerId: "anthropic", model: "claude-opus-5" },
+    request: { machineHostId: "host_laptop", providerId: "anthropic", model: "claude-opus-5", reasoningLevel: null, serviceTier: null },
     machines,
     catalog: null,
   });

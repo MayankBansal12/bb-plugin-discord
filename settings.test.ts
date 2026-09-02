@@ -1,5 +1,5 @@
 // Source-level invariants for the staged settings architecture. The bot token
-// remains in BB's secret store; every non-secret preference lives in the
+// remains in bb's secret store; every non-secret preference lives in the
 // plugin-owned config row and is written through narrow RPC handlers.
 
 import assert from "node:assert/strict";
@@ -24,7 +24,7 @@ test("the host-rendered settings form asks for the bot token only", () => {
   assert.ok(block, "settings definition should be present");
   assert.match(block, /botToken:/);
   assert.match(block, /secret: true/);
-  assert.match(block, /label: "Discord Token"/);
+  assert.match(block, /label: "Discord bot token"/);
   for (const key of [
     "permissionMode",
     "serverAccess",

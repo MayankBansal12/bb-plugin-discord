@@ -12,10 +12,10 @@ test("no Discord tools are offered before pairing", () => {
   assert.deepEqual(availableToolNames("full", true, false), []);
 });
 
-test("Discord audit reasons identify the originating BB thread", () => {
+test("Discord audit reasons identify the originating bb thread", () => {
   assert.equal(
     discordAuditReason("thread-123"),
-    "Requested through BB's Discord plugin by thread thread-123",
+    "Requested through bb's Discord plugin by thread thread-123",
   );
 });
 

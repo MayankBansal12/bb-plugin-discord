@@ -442,7 +442,7 @@ test("session names are derived from compacted request text", () => {
 });
 
 test("session names have a useful fallback and Discord's 100-character cap", () => {
-  assert.equal(discordSessionName(" \n "), "BB conversation");
+  assert.equal(discordSessionName(" \n "), "bb conversation");
   assert.equal(discordSessionName("x".repeat(120)).length, 100);
   assert.match(discordSessionName("x".repeat(120)), /…$/);
 });

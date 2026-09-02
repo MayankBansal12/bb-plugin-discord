@@ -1,4 +1,4 @@
-// Agent tools that let a BB thread operate the paired Discord server.
+// Agent tools that let a bb thread operate the paired Discord server.
 //
 // Access is graduated on purpose:
 //   "messages" (default) — read and write messages and threads only.
@@ -57,7 +57,7 @@ export function availableToolNames(
 }
 
 export function discordAuditReason(threadId: string): string {
-  return `Requested through BB's Discord plugin by thread ${threadId}`;
+  return `Requested through bb's Discord plugin by thread ${threadId}`;
 }
 
 type ToolResult = string | { content: [{ type: "text"; text: string }]; isError: true };
@@ -76,17 +76,17 @@ function ready(deps: DiscordToolDeps, requireFull: boolean): Ready | ToolResult 
   const guildId = deps.getGuildId();
   if (!client || !client.isReady()) {
     return toolError(
-      "Discord is not connected. Check the connection panel in BB → Settings → Plugins → Discord.",
+      "Discord is not connected. Check the connection panel in Settings → Extensions → Plugins → Discord in bb.",
     );
   }
   if (!guildId) {
     return toolError(
-      "Discord is not paired yet. Complete pairing in BB → Settings → Plugins → Discord.",
+      "Discord is not paired yet. Complete pairing in Settings → Extensions → Plugins → Discord in bb.",
     );
   }
   if (requireFull && deps.getAccessLevel() !== "full") {
     return toolError(
-      "This action needs full server access. Set Discord server access to \"full\" in Settings → Plugins → Discord.",
+      "This action needs full server access. Set Discord access to \"Full server access\" in Settings → Extensions → Plugins → Discord in bb.",
     );
   }
   return { client, guildId };
@@ -364,7 +364,7 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
       if (!isReady(state)) return state;
       if (!deps.allowsDestructive()) {
         return toolError(
-          "Destructive Discord actions are disabled. Enable \"Allow destructive server actions\" in Settings → Plugins → Discord first.",
+          "Destructive Discord actions are disabled. Enable \"Destructive actions\" in Settings → Extensions → Plugins → Discord in bb first.",
         );
       }
       return guarded(async () => {
@@ -407,7 +407,7 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
       if (!isReady(state)) return state;
       if (!deps.allowsDestructive()) {
         return toolError(
-          "Destructive Discord actions are disabled. Enable \"Allow destructive server actions\" in Settings → Plugins → Discord first.",
+          "Destructive Discord actions are disabled. Enable \"Destructive actions\" in Settings → Extensions → Plugins → Discord in bb first.",
         );
       }
       return guarded(async () => {

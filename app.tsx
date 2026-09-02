@@ -673,7 +673,7 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
                 "flex size-9 shrink-0 items-center justify-center rounded-full",
                 gatewayDown
                   ? "bg-destructive/10 text-destructive"
-                  : "bg-emerald-500/10 text-emerald-500",
+                  : "bg-primary/10 text-primary",
               )}
               aria-hidden="true"
             >
@@ -688,7 +688,7 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
             <Badge className={cn(
               gatewayDown
                 ? "bg-destructive/10 text-destructive"
-                : "bg-emerald-500/10 text-emerald-500",
+                : "bg-primary/10 text-primary",
             )}>
               {gatewayDown ? "Needs attention" : "Connected"}
             </Badge>
@@ -787,14 +787,14 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
           }}
         >
           <div className="flex min-w-0 items-center gap-3">
-            <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-amber-400 text-sm font-bold text-amber-950" aria-hidden="true">!</span>
+            <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-bold text-primary-foreground" aria-hidden="true">!</span>
             <span className="truncate text-sm font-medium text-foreground">
               {savingConfig ? "Saving your changes…" : "Careful — save these changes before using the Discord bot."}
             </span>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <Button variant="ghost" disabled={busy} onClick={() => setEdits({})}>Reset</Button>
-            <Button disabled={busy} onClick={() => void saveConfiguration()}>{savingConfig ? "Saving…" : "Save Changes"}</Button>
+            <Button disabled={busy} onClick={() => void saveConfiguration()}>{savingConfig ? "Saving…" : "Save changes"}</Button>
           </div>
         </div>
       ) : null}
@@ -821,7 +821,7 @@ export default definePluginApp((app) => {
   app.slots.settingsSection({
     id: "setup",
     title: "Discord setup",
-    description: "Choose where threads run and what your Discord bot can access.",
+    description: "Connect your bot, choose where bb threads run, and control Discord access.",
     component: DiscordSettings,
   });
 });

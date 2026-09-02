@@ -1,4 +1,4 @@
-// Where and how a Discord-started BB thread runs.
+// Where and how a Discord-started bb thread runs.
 //
 // Project, machine and model are one decision, not three: the project decides
 // which checkout the agent gets, the machine decides which host runs it, and
@@ -172,7 +172,7 @@ export function clampPermissionMode(
 
 /**
  * Build the environment for a pinned machine. A personal-project thread has no
- * checkout, and a project thread gets BB's managed worktree so a Discord
+ * checkout, and a project thread gets bb's managed worktree so a Discord
  * request never lands in whatever state a shared clone happens to be in.
  */
 export function spawnEnvironmentFor(
@@ -213,7 +213,7 @@ export function resolveExecution(
         ok: false,
         problem: {
           setting: "machineHostId",
-          message: `Machine \`${selection.hostId}\` is not an enrolled bb machine any more. Choose a machine again under Settings → Plugins → Discord → Configuration.`,
+          message: `Machine \`${selection.hostId}\` is not enrolled with bb anymore. Choose a machine again in Settings → Extensions → Plugins → Discord.`,
         },
       };
     }

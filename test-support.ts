@@ -52,7 +52,7 @@ export function executionFixture(
     resolvedProviderId: null,
     resolvedReasoningLevel: null,
     resolvedServiceTier: null,
-    summary: "Discord requests open a BB thread in Personal.",
+    summary: "Discord requests open a bb thread in Personal.",
     issues: [],
     projects: [],
     machines: [],

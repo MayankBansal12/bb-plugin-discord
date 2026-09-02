@@ -1,7 +1,7 @@
 // Pure onboarding helpers: pairing codes, bot-invite URLs, permission
 // resolution, and Discord error classification.
 //
-// Deliberately free of discord.js and BB SDK imports so every branch here is
+// Deliberately free of discord.js and bb SDK imports so every branch here is
 // unit-testable without a gateway connection.
 
 import { randomInt } from "node:crypto";
@@ -112,11 +112,11 @@ export type PairingFailureReason = "no-code" | "expired" | "mismatch";
 export function pairingFailureMessage(reason: PairingFailureReason): string {
   switch (reason) {
     case "no-code":
-      return "No pairing code is active. Open BB → Settings → Plugins → Discord to create one.";
+      return "No pairing code is active. Open Settings → Extensions → Plugins → Discord in bb to create one.";
     case "expired":
-      return "That pairing code expired. Create a new one in BB → Settings → Plugins → Discord.";
+      return "That pairing code expired. Create a new one in Settings → Extensions → Plugins → Discord in bb.";
     default:
-      return "That code does not match. Copy the current command from BB → Settings → Plugins → Discord.";
+      return "That code does not match. Copy the current command from Settings → Extensions → Plugins → Discord in bb.";
   }
 }
 
@@ -271,7 +271,7 @@ export function needsConfigurationFor(kind: DiscordErrorKind): boolean {
 
 export interface ClassifiedDiscordError {
   kind: DiscordErrorKind;
-  /** Operator-facing sentence, safe to show in BB status and in Discord. */
+  /** Operator-facing sentence, safe to show in bb status and in Discord. */
   message: string;
   /** True when retrying without a configuration change cannot help. */
   needsConfiguration: boolean;
@@ -327,7 +327,7 @@ export function classifyDiscordError(error: unknown): ClassifiedDiscordError {
     return {
       kind: "missing-permissions",
       message:
-        "The bot lacks permission for that action. Open BB → Settings → Plugins → Discord and use the invite link again, or update the bot role in Discord.",
+        "The bot lacks permission for that action. Open Settings → Extensions → Plugins → Discord in bb and use the invite link again, or update the bot role in Discord.",
       needsConfiguration: needsConfigurationFor("missing-permissions"),
     };
   }

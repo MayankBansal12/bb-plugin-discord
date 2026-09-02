@@ -1,145 +1,123 @@
-# bb-plugin-discord
+# Discord for bb
 
-Control BB agent threads from Discord. Mention the bot in a channel to open a dedicated Discord session thread, continue there without repeated mentions, answer supported BB interactions, and receive per-turn lifecycle updates. With full server access granted, BB can also administer the paired Discord server.
+Run bb agent threads from Discord. Mention your bot to start a dedicated conversation, continue in the Discord thread without mentioning it again, answer bb questions and approvals, and receive the result where the conversation started.
 
-## Setup
+With optional full server access, bb agents can also read and manage the paired Discord server through permission-gated tools.
 
-Pair the bot from BB's UI—no terminal or Discord IDs required.
+## Demo
 
-### 1. Create the bot
+Demo screenshots and a short setup walkthrough will be added before the marketplace submission.
 
-1. In the [Discord Developer Portal](https://discord.com/developers/applications), create an application and bot.
-2. On the Bot page, copy/reset the token and enable **Message Content Intent**. **Server Members Intent** is optional — enable it on the application only if you want member listing. The bridge uses Discord's REST member-list endpoint and does not request member events in its gateway connection.
-3. Open BB → Settings → Plugins → Discord, paste the token, and save it. The
-   token is the only setting shown until BB verifies the bot.
+<!--
+Add the final marketplace media here when it is ready:
 
-### 2. Pair from BB
+1. Product overview: Discord request → dedicated thread → bb response.
+2. Setup walkthrough: token → invite → pairing command → connected state.
+3. Optional short clip: resolving a bb approval from Discord.
 
-After verification, the **Discord setup** panel shows the bot identity and walks you through the rest:
+Suggested location: docs/images/
 
-1. Select **Open Discord invite** and add the bot to your server.
-2. Copy the pairing command shown in BB.
-3. Send that command in the Discord channel you want to use.
+For the bb Community listing, up to six screenshots can be copied into the
+marketplace repository. Each must be PNG, JPEG, or WebP, at least 1200 pixels
+wide, and no larger than 2 MiB.
+-->
 
-The code is single-use and expires after ten minutes. The panel updates as soon as Discord accepts it, showing one compact connection summary followed by the configuration controls. It also provides a confirmation-backed disconnect action.
+## Install
 
-The default `messages` invite includes **Create Public Threads** and **Send Messages in Threads**, which the session model requires. If the bot was invited before those permissions were added to its role, open the invite link again after saving the desired access level.
+Discord for bb requires bb 0.40.0 or later.
 
-### Terminal alternative
-
-The existing CLI flow remains available:
+After its marketplace launch, install it from bb's Extensions page. To install the current repository directly:
 
 ```sh
-bb discord pair
-bb discord invite
+bb plugin install git:https://github.com/MayankBansal12/bb-plugin-discord.git@main
 ```
 
-Send the printed command in Discord:
+For development, clone the repository and install the local checkout instead:
+
+```sh
+npm ci
+bb plugin install .
+```
+
+## Set up Discord
+
+Initial pairing happens in bb and Discord. You do not need Discord Developer Mode or any copied server, channel, or user IDs.
+
+### 1. Create a Discord bot
+
+1. Open the [Discord Developer Portal](https://discord.com/developers/applications) and create an application.
+2. Open **Bot**, create the bot if needed, and copy or reset its token.
+3. Enable **Message Content Intent**.
+4. Optional: enable **Server Members Intent** if you want agents to list server members.
+
+Keep the token private. Anyone with it can operate the bot.
+
+### 2. Add the token in bb
+
+Open **Settings → Extensions → Plugins → Discord** in bb, paste the token into **Discord bot token**, and save it. bb stores the token as a secret and verifies it with Discord before showing the remaining setup steps.
+
+### 3. Invite and pair the bot
+
+Once the token is verified, the **Discord setup** section shows the bot identity and guides you through pairing:
+
+1. Select **Invite to Discord** and add the bot to the server you want to connect.
+2. Copy the one-time pairing command shown in bb.
+3. Send that exact command in the Discord channel you want to use for status and failure alerts.
+
+The command looks like this, using your bot's real user ID and a six-character code:
 
 ```text
 <@123456789012345678> pair ABC-123
 ```
 
-BB fills in the bot's actual user id. Copy the command exactly as printed;
-Discord resolves the raw `<@BOT_USER_ID>` syntax as a real bot mention.
+The code is single-use and expires after ten minutes. Pairing authorizes the server, the person who sent the command, and that channel as the default home channel. A server cannot claim the bot before an operator creates the code in bb.
 
-The bot confirms the server, authorized user, and home channel. No Developer Mode or copied snowflake IDs are needed.
+The default invite includes the permissions needed to create and reply inside public Discord threads. If the bot was invited before those permissions were added, use the invite link again or update the bot's Discord role.
 
-The code is generated in BB and consumed in Discord, so a server cannot claim your bot by talking to it first. While unpaired, the bot ignores every message that is not a mention carrying a valid code.
+### Terminal setup
+
+The same flow is available through the bb CLI:
 
 ```sh
-bb discord status     # connection, pairing, access level, recent threads
-bb discord allow <id> # authorize another Discord user
-bb discord unpair     # forget the server and every allowed user
+bb discord pair
 ```
 
-`bb discord status` reports that pairing is pending but deliberately omits the live code. Use the explicit `bb discord pair` operator command to reveal it. Existing non-secret preferences are migrated into the plugin-owned configuration row during a live upgrade.
+The command prints the invite URL and the exact pairing command to send in Discord. Useful follow-up commands:
 
-## Security boundary
+```sh
+bb discord status
+bb discord invite
+bb discord allow <discord-user-id>
+bb discord revoke <discord-user-id>
+bb discord unpair
+```
 
-This plugin can start agent work on the machine that runs BB. Treat access like shell access:
+`bb discord status` never prints the active pairing code. Run `bb discord pair` when you explicitly need to reveal or refresh it.
 
-- Pairing requires a code that only appears inside BB.
-- Only the paired guild is accepted; only paired and explicitly allowed users can drive BB.
-- New conversations require an explicit bot mention.
-- Discord-started BB threads run in `auto` by default. Choose `accept-edits` for user review of every escalation, `full` to bypass sandboxing and approval prompts, or `project-default` to inherit the project setting. A machine whose permission ceiling is lower lowers the thread further.
-- The bot token is a secret setting stored in BB's permission-restricted plugin secrets directory. The frontend receives only a fixed mask and its final four characters for rotation recognition.
-- Prompts are capped at 8,000 characters and Discord message IDs are deduplicated.
-- Discord-started threads use your personal project unless you pick a default project. There is deliberately no "first available project" fallback.
+## Start a conversation
 
-## Configuration
-
-The host-rendered BB settings form contains only the bot token, because it
-belongs in BB's secret store. Once the token is verified and a server is
-paired, the same page reveals one configuration surface for the remaining
-preferences—there is no second read-only copy of the values and no raw machine,
-provider, guild, or user ID field to keep in sync.
-
-| Setting | Required | Purpose |
-|---|---:|---|
-| Discord bot token | Yes | Gateway authentication; stored as a secret. Everything else is discovered or optional. |
-| Permission mode for Discord threads | No | Defaults to `auto`. `accept-edits` asks the user to review escalations; `full` bypasses prompts and sandboxing; `project-default` inherits the project's mode. |
-| Discord server access | No | `messages` (default) or `full`. See below. |
-| Allow destructive server actions | No | Off by default, and inert until server access is `full`. Changing it never changes server access. |
-| Project for Discord threads | No | Which checkout the agent gets. Defaults to your personal project. |
-| Machine for Discord threads | No | Which enrolled machine runs the thread. Choose it from the **Machine** list in Discord setup rather than typing an id. Empty follows the project default. |
-| Model for Discord threads | No | Choose it from the **Model** list in Discord setup, which offers only what the selected machine can serve. Empty uses the project's default model. |
-| Only start conversations in this channel | No | Empty means the bot can open new conversations anywhere in the paired server. Existing conversation threads always keep working. |
-| Home channel for status and alerts | No | Empty sends them to the channel the pairing command ran in. Discord setup shows which channel that is. |
-| Additional authorized users | No | Add or remove these with `bb discord allow <id>` and `bb discord revoke <id>`. The person who pairs is always authorized. |
-
-### Where Discord requests run
-
-Project, machine and model are one decision, not three. The project decides the
-checkout, the machine decides the computer, and **the model catalog belongs to
-the machine** — a provider signed in on your laptop is not signed in on a build
-box. So a saved model can stop being valid without this form changing.
-
-Pick the machine and model from the two lists in **Settings → Plugins → Discord**.
-Both offer *Automatic — project default* alongside your live
-machines and the models that machine's signed-in providers actually report, so
-there is no id to type and no invalid pair to choose. Changing the machine
-resets the model to Automatic, because the model list belongs to the machine;
-the panel says so rather than silently picking a different model for you. The
-server re-checks whatever the panel posts against the catalog it just read, so a
-list that went stale between render and click is refused rather than saved.
-
-Resolution happens again on every Discord request rather than trusting what was
-saved. A pinned model the machine cannot serve, **a project-default model that
-machine does not offer**, an offline machine, or a project with no checkout
-there is refused with a message naming what to change — never quietly swapped
-for something else. Discord setup runs the same check continuously, so
-a combination that has gone stale shows up there before a Discord request hits
-it.
-
-Leave all three empty and behaviour is unchanged: the personal project, the
-project's default host, and the project's default provider and model.
-
-## Usage
-
-Start a conversation by mentioning the bot anywhere in the paired server:
+Mention the bot with a request in a normal channel:
 
 ```text
-@bb inspect the failing login tests
+@your-bot inspect the failing login tests
 ```
 
-The bot creates a Discord thread named from that request and links a new BB thread to it. The initiating mention gets a 🚀 reaction once the session is established. Continue inside the Discord thread: every message from an allowlisted user is forwarded without another mention, and BB's replies and interaction prompts return there.
+The plugin creates a dedicated Discord thread and a linked bb thread. A 🚀 reaction confirms that the session is ready. Continue inside the Discord thread; authorized users do not need to mention the bot again.
 
-The parent channel remains ordinary Discord space. Unmentioned messages there are ignored completely — they are not forwarded and receive no reaction. Mention the bot again in the parent channel whenever you want a separate session.
+Unmentioned messages in parent channels are ignored. Mention the bot again in a parent channel whenever you want a separate conversation. Mentions inside unrelated Discord threads are ignored so the bot does not attach itself to an existing discussion by accident.
 
-Upgrades preserve older channel-bound mappings. Their channel chatter becomes mention-only immediately; lifecycle output continues in that original channel until the next explicit mention moves the existing BB conversation into a newly named Discord thread.
+### Questions and approvals
 
-When BB asks one question, reply normally. For several questions, reply with numbered lines:
+Reply normally when bb asks one question. For several questions, use numbered lines:
 
 ```text
 1: feature/discord
 2: run the full suite
 ```
 
-Approval requests include Discord buttons for every decision BB offers. Choose
-**Approve once**, **Allow for session**, or **Deny** without typing. Allow for
-session grants only the requested permission for the current BB provider
-session; it is not unrestricted Full access. Text replies remain as a fallback:
+Approval requests include Discord buttons for every decision bb offers. Depending on the request, choose **Approve once**, **Allow for session**, or **Deny**. “Allow for session” grants only the requested permission for the current provider session; it does not enable unrestricted full access.
+
+Text replies remain available as a fallback:
 
 ```text
 approve
@@ -147,84 +125,137 @@ approve session
 deny
 ```
 
-Only decisions offered by BB are shown and accepted. Buttons target one exact
-request, so several simultaneous approvals can be handled independently. Plain
-text replies remain intentionally ambiguous when several requests are pending;
-the bot asks you to use the buttons or open BB.
+When several approvals are pending, use the buttons on the exact request or open the conversation in bb. Plain-text replies are intentionally not guessed in that situation.
 
-## Controlling the Discord server from BB
+## Choose where requests run
 
-Once paired, BB threads get Discord tools. The access level is a setting, not a hardcoded limit.
+Open **Settings → Extensions → Plugins → Discord** in bb after pairing to choose the project, machine, model, permission mode, and channel behavior for new Discord conversations.
 
-**`messages` (default)** — messages and threads only:
+Project, machine, and model form one execution choice:
 
-| Tool | Does |
+- The project selects the checkout and defaults to your personal project.
+- The machine selects the enrolled computer and defaults to the project's machine.
+- The model list comes from providers available on that machine and defaults to the project's model.
+
+Changing the machine resets a pinned model because model availability belongs to the machine. The plugin validates this choice again for every Discord request. An offline machine, unavailable model, signed-out provider, or missing project checkout produces an actionable error instead of silently switching execution targets.
+
+| Setting | Default | What it controls |
+|---|---|---|
+| Project | Personal project | The checkout and project defaults used by new bb threads. |
+| Machine | Project default | The enrolled machine that runs new requests. |
+| Model | Project default | The provider, model, reasoning level, and service tier. |
+| bb permission mode | `auto` | The approval and sandbox policy for Discord-started threads. |
+| Discord access | Messages only | Which Discord tools bb agents receive. |
+| Destructive actions | Off | Whether full-access agents may delete channels or moderate members. |
+| Status and alerts | Pairing channel | Where connection and failure notices are posted. |
+| New conversations | Any channel | Optionally restricts where a mention can start a new session. |
+
+Optional channel overrides use Discord channel IDs. Initial pairing itself does not require them.
+
+## Security model
+
+This plugin can start agent work on a machine running bb. Treat access to the paired bot like shell access.
+
+- Pairing requires a short-lived code created inside bb.
+- Only the paired server is accepted.
+- Only the person who paired and explicitly allowlisted users can drive bb.
+- New conversations require an explicit bot mention.
+- Discord-started threads use `auto` permission mode by default. The selected machine's permission ceiling can only reduce that access.
+- The bot token stays in bb's permission-restricted plugin secret store. The frontend receives only a fixed mask and the final four characters.
+- Prompts are capped at 8,000 characters, and Discord message IDs are deduplicated.
+- Discord-started threads use the personal project unless you explicitly choose another project. There is no “first available project” fallback.
+
+Permission modes:
+
+- `auto` keeps workspace sandboxing and lets bb decide when approval is required.
+- `accept-edits` asks the user to review escalations.
+- `full` bypasses sandboxing and approval prompts when the machine also permits it.
+- `project-default` inherits the project's permission mode.
+
+## Discord tools
+
+Once paired, bb threads can use tools against the paired server. Tool availability follows the access level saved in the plugin settings.
+
+### Messages only
+
+This least-privilege default can inspect the server and work with messages and threads.
+
+| Tool | Action |
 |---|---|
 | `discord_server_info` | Summarize the paired server. |
-| `discord_list_channels` | List channels with ids, types, categories, topics. |
+| `discord_list_channels` | List channels, categories, and topics. |
 | `discord_read_channel` | Read recent messages from a channel or thread. |
-| `discord_send_message` | Post to any channel or thread. |
-| `discord_create_thread` | Open a thread under a text channel. |
+| `discord_send_message` | Send a message to a channel or thread. |
+| `discord_create_thread` | Create a public thread under a text channel. |
 
-**`full`** — adds server administration:
+### Full server access
 
-| Tool | Does |
+Full access adds server administration tools:
+
+| Tool | Action |
 |---|---|
-| `discord_list_roles` | List roles by position. |
-| `discord_list_members` | List members over REST (needs Server Members Intent enabled for the application, but no member gateway intent). |
-| `discord_create_channel` | Create text/voice/category/announcement/forum/stage channels. |
-| `discord_edit_channel` | Rename, retopic, or set slowmode. |
-| `discord_manage_member_role` | Add or remove a role on a member. |
+| `discord_list_roles` | List server roles. |
+| `discord_list_members` | List members through Discord's REST API. |
+| `discord_create_channel` | Create text, voice, category, announcement, forum, or stage channels. |
+| `discord_edit_channel` | Rename a channel, update its topic, or set slow mode. |
+| `discord_manage_member_role` | Add or remove a member role. |
 
-**Destructive actions**, behind `full` *and* the separate "Allow destructive server actions" toggle:
+Re-invite the bot with `bb discord invite --full` after enabling full access so Discord grants the additional permissions.
 
-| Tool | Does |
+### Destructive actions
+
+These tools appear only when **Discord access** is set to **Full server access** and **Destructive actions** is enabled separately:
+
+| Tool | Action |
 |---|---|
 | `discord_delete_channel` | Permanently delete a channel and its history. |
 | `discord_moderate_member` | Kick, ban, or time out a member. |
 
-Destructive tools also require the model to pass an explicit `confirm` flag and are instructed to get your go-ahead in the thread first. Every administrative call writes the originating BB thread id into the Discord audit log.
+Destructive calls require an explicit confirmation argument. Administrative calls include the originating bb thread ID in Discord's audit log.
 
-Re-invite the bot with `bb discord invite --full` after raising the access level, otherwise Discord itself will refuse the new operations.
+## Troubleshooting
 
-## Failure handling
+- **Discord rejects the token:** reset it on the Developer Portal's **Bot** page, then replace it in bb.
+- **The gateway closes with code 4014:** enable **Message Content Intent** for the application.
+- **Messages arrive without text:** enable **Message Content Intent**, then restart bb.
+- **Member listing fails:** enable **Server Members Intent**. The gateway does not subscribe to member events, and other tools continue to work.
+- **The bot cannot create or reply in threads:** use the invite link again or grant **Create Public Threads** and **Send Messages in Threads** to the bot's role.
+- **A machine or model is unavailable:** update **Where requests run** in the Discord plugin settings.
 
-Configuration mistakes surface as sentences, not stack traces:
+Saving a replacement token reconnects the gateway without `bb plugin reload`. Network reconnects use exponential backoff from two seconds up to one minute.
 
-- **Bad token** — "Discord rejected the bot token…" and the bridge stops retrying until you change it.
-- **Message Content Intent off** — Discord refuses the connection with `4014`; the plugin names the exact toggle to flip. If content still arrives empty, it warns once in the home channel.
-- **Server Members Intent off** — only the REST-backed `discord_list_members` call fails, and it says to enable the privileged intent for the application on the Developer Portal's Bot page. The gateway deliberately does not identify with `GuildMembers`; every other tool keeps working.
-- **Missing bot permissions** — reported as a permission problem with a pointer to the invite link in the connection panel, and sends are not retried into a rate limit.
-- **Network drops** — exponential backoff from 2s to a 60s ceiling; discord.js resumes the session itself.
-
-Saving a new token reconnects the gateway on its own — no `bb plugin reload discord`.
-
-BB's `needs-configuration` badge is used for standing token and gateway-intent configuration failures. Pairing and connection state stays live in the Discord connection panel through realtime invalidations and RPC refreshes, with a slow safety refresh after missed signals.
-
-## Development and verification
+Inspect plugin health and logs with:
 
 ```sh
-npm install
-npm run check
-```
-
-`npm run check` typechecks against the vendored declarations, runs the bridge, pairing, and tool-gating tests, verifies that declarations match the installed BB SDK, and produces the plugin artifacts.
-
-Install or reload the local checkout with:
-
-```sh
-bb plugin install .
-bb plugin reload discord
+bb discord status
 bb plugin list
 bb plugin logs discord -n 100
 ```
 
-The Gateway connection runs as a supervised `bb.background.service`. Discord.js handles gateway reconnects, and outbound message chunks receive bounded retries. Deduplication state, pairing, and Discord-session ↔ BB-thread mappings are stored in the plugin SQLite database.
+## Development
 
-## Current scope
+The plugin requires Node.js 22.19 or later for local development.
 
-- Each bot mention in a normal channel opens a separate Discord session thread mapped to one BB thread.
-- One paired guild with one or more allowlisted users.
-- Replies are per turn, not token-streamed.
-- Plain text and approval/question interactions are bridged; multiple simultaneous interactions must be resolved in BB.
-- Per-channel project routing is not implemented yet; all Discord threads use one project.
+```sh
+npm ci
+npm run check
+```
+
+`npm run check` typechecks every TypeScript source and test, runs the complete test suite, verifies the vendored declarations against the installed bb SDK, and builds the server and app artifacts.
+
+For a live development loop:
+
+```sh
+bb plugin install .
+bb plugin dev
+```
+
+The Discord gateway runs as a supervised `bb.background.service`. Pairing state, deduplication records, configuration, and Discord-thread ↔ bb-thread mappings live in the plugin's SQLite database.
+
+## Current limitations
+
+- One paired Discord server per plugin installation.
+- One or more explicitly authorized Discord users.
+- Replies are sent per turn rather than streamed token by token.
+- Plain text, bb questions, and bb approvals are bridged; other interaction types may still require opening bb.
+- Per-channel project routing is not available; all new Discord conversations use the plugin's configured project.

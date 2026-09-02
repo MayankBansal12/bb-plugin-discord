@@ -1,4 +1,4 @@
-// BB uses each statement's array index as its migration id. Keep this v0.0.4
+// bb uses each statement's array index as its migration id. Keep this v0.0.4
 // prefix byte-for-byte and append every new migration after it so upgrades
 // cannot reinterpret an already-applied id as a different statement.
 export const legacyMigrations = [

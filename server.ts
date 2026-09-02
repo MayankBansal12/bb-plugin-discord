@@ -1,4 +1,4 @@
-// bb-plugin-discord — drive BB agent threads from a paired Discord server.
+// bb-plugin-discord — drive bb agent threads from a paired Discord server.
 
 import { createHash } from "node:crypto";
 import type { BbPluginApi } from "@bb/plugin-sdk";
@@ -220,7 +220,7 @@ export default async function plugin(bb: BbPluginApi) {
     botToken: {
       type: "string",
       secret: true,
-      label: "Discord Token",
+      label: "Discord bot token",
       description:
         "Paste your Discord bot token to connect for the first time or replace the current token. bb stores it securely and verifies it before continuing.",
     },
@@ -438,8 +438,8 @@ export default async function plugin(bb: BbPluginApi) {
           project: null,
           projects,
           error: configuredProjectId
-            ? `Project \`${configuredProjectId}\` no longer exists. Pick a different project in Settings → Plugins → Discord.`
-            : "No personal bb project is available. Pick a project in Settings → Plugins → Discord.",
+            ? `Project \`${configuredProjectId}\` no longer exists. Pick a different project in Settings → Extensions → Plugins → Discord in bb.`
+            : "No personal bb project is available. Pick a project in Settings → Extensions → Plugins → Discord in bb.",
         };
       }
       return {
@@ -527,7 +527,7 @@ export default async function plugin(bb: BbPluginApi) {
         );
       }
     }
-    // Model catalogs are provider-scoped. Without the provider id, BB returns
+    // Model catalogs are provider-scoped. Without the provider id, bb returns
     // the routed default provider's models, which made a valid OpenCode/Grok
     // selection look absent when this plugin validated it.
     const catalog = await loadCatalog(
@@ -763,7 +763,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   const announcePairing = (): void => {
     bb.log.info(
-      `Discord connected as ${botName()} and is awaiting pairing. Open Settings → Plugins → Discord or explicitly run \`bb discord pair\` to get the one-time command.`,
+      `Discord connected as ${botName()} and is awaiting pairing. Open Settings → Extensions → Plugins → Discord in bb or run \`bb discord pair\` to get the one-time command.`,
     );
   };
 
@@ -1206,7 +1206,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (!context.project) {
       throw new Error(
         context.projectError ??
-          "No bb project is available for Discord threads. Pick one in Settings → Plugins → Discord.",
+          "No bb project is available for Discord threads. Pick one in Settings → Extensions → Plugins → Discord in bb.",
       );
     }
     if (!context.defaults) {
@@ -1241,7 +1241,7 @@ export default async function plugin(bb: BbPluginApi) {
       permissionMode: plan.permissionMode,
       serviceTier: plan.serviceTier,
       environment: plan.environment,
-      // Say which of these the operator actually chose, so BB records the
+      // Say which of these the operator actually chose, so bb records the
       // Discord settings as explicit rather than as a client preference.
       executionInputSources: {
         model: values.model?.trim() ? "explicit" : "client-preference",
@@ -1336,7 +1336,7 @@ export default async function plugin(bb: BbPluginApi) {
       await sendToDiscord(
         message.guildId,
         message.channelId,
-        "⚠️ I found multiple pending BB requests. Use the buttons on the request you want to answer, or open the BB thread.",
+        "⚠️ I found multiple pending bb requests. Use the buttons on the request you want to answer, or open the bb thread.",
       );
       return true;
     }
@@ -1384,7 +1384,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (!stored || stored.status !== "pending") {
         return {
           outcome: "stale",
-          statusText: "⌛ This BB approval is no longer pending.",
+          statusText: "⌛ This bb approval is no longer pending.",
         };
       }
       const map = getMapByBbThread(stored.bb_thread_id);
@@ -1413,7 +1413,7 @@ export default async function plugin(bb: BbPluginApi) {
         finishApprovalAction(action.token, "stale");
         return {
           outcome: "stale",
-          statusText: "⌛ This BB approval was already answered or expired.",
+          statusText: "⌛ This bb approval was already answered or expired.",
         };
       }
 
@@ -1425,7 +1425,7 @@ export default async function plugin(bb: BbPluginApi) {
         finishApprovalAction(action.token, "stale");
         return {
           outcome: "stale",
-          statusText: "⌛ That choice is not available for this BB approval.",
+          statusText: "⌛ That choice is not available for this bb approval.",
         };
       }
       await bb.sdk.threads.interactions.resolve({
@@ -1448,7 +1448,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (action.decision === "allow_for_session") {
         return {
           outcome: "resolved",
-          statusText: `✅ Allowed for this BB session by ${actor}. Similar requests may proceed without another prompt.`,
+          statusText: `✅ Allowed for this bb session by ${actor}. Similar requests may proceed without another prompt.`,
         };
       }
       return { outcome: "resolved", statusText: `⛔ Denied by ${actor}.` };
@@ -1459,7 +1459,7 @@ export default async function plugin(bb: BbPluginApi) {
       return {
         outcome: "retry",
         errorText:
-          "BB could not apply that decision yet. The approval is still open; please try again.",
+          "bb could not apply that decision yet. The approval is still open; please try again.",
       };
     } finally {
       resolvingApprovalTokens.delete(action.token);
@@ -1477,7 +1477,7 @@ export default async function plugin(bb: BbPluginApi) {
       await sendToDiscord(
         message.guildId,
         message.channelId,
-        "Open bb → Settings → Plugins → Discord for a pairing code, then send the command shown there. Prefer the terminal? Run `bb discord pair`.",
+        "Open Settings → Extensions → Plugins → Discord in bb for a pairing code, then send the command shown there. Prefer the terminal? Run `bb discord pair`.",
       );
       return;
     }
@@ -1579,7 +1579,7 @@ export default async function plugin(bb: BbPluginApi) {
       await sendToDiscord(
         message.guildId,
         message.channelId,
-        "⚠️ I couldn’t start that conversation because the restricted channel setting isn’t a valid Discord channel ID. Update it in bb → Settings → Plugins → Discord, then try again.",
+        "⚠️ I couldn’t start that conversation because the restricted channel setting isn’t a valid Discord channel ID. Update it in Settings → Extensions → Plugins → Discord in bb, then try again.",
       );
       return;
     }
@@ -1754,7 +1754,7 @@ export default async function plugin(bb: BbPluginApi) {
     // Belt and braces. The watcher is the primary announcement path because a
     // thread blocked on an approval stays `active`, and it is stopped on the
     // first line of this handler. But nothing guarantees every interaction
-    // kind keeps the thread active — a question BB asks at the end of a turn
+    // kind keeps the thread active — a question bb asks at the end of a turn
     // could land here instead. Announcing is idempotent (DB-backed
     // `isInteractionPosted` plus the in-flight guard), so the only thing this
     // costs is one list call, and the thing it prevents is an interaction that
@@ -1881,7 +1881,7 @@ export default async function plugin(bb: BbPluginApi) {
               ? `Paired: ${pairing.guild_name ?? pairing.guild_id} · #${pairing.channel_name ?? pairing.channel_id} · ${pairing.user_tag ?? "Discord user"} (${pairing.user_id})`
               : cached.botToken
                 ? "Paired: no — run `bb discord pair`"
-                : "Paired: no — add the bot token in Settings → Plugins → Discord",
+                : "Paired: no — add the bot token in Settings → Extensions → Plugins → Discord in bb",
             `Authorized users: ${effectiveAllowedUsers().join(", ") || "(none)"}`,
             `Server access: ${config.serverAccess.value}${config.destructiveActions.effective ? " (destructive actions enabled)" : config.destructiveActions.configured ? " (destructive actions requested but inactive)" : ""}`,
             `Thread permission mode: ${config.permissionMode.value}`,
@@ -1906,7 +1906,7 @@ export default async function plugin(bb: BbPluginApi) {
           return {
             exitCode: 1,
             stderr:
-              "No bot token yet. Add it in Settings → Plugins → Discord, then run `bb discord pair`.",
+              "No bot token yet. Add it in Settings → Extensions → Plugins → Discord in bb, then run `bb discord pair`.",
           };
         }
         const pairing = getPairing();
@@ -1941,7 +1941,7 @@ export default async function plugin(bb: BbPluginApi) {
           return {
             exitCode: 1,
             stderr:
-              "Could not derive the application id from the bot token. Check the token in Settings → Plugins → Discord.",
+              "Could not derive the application id from the bot token. Check the token in Settings → Extensions → Plugins → Discord in bb.",
           };
         }
         return {
@@ -2060,7 +2060,7 @@ export default async function plugin(bb: BbPluginApi) {
           // what the SDK's needs-configuration state is for; it clears on the
           // next load, so it does not go stale the way a pairing prompt would.
           bb.status.needsConfiguration(
-            "Add your bot token in Settings → Plugins → Discord. You can finish pairing in the connection panel there.",
+            "Add your bot token in Settings → Extensions → Plugins → Discord in bb. You can finish pairing in the connection panel there.",
           );
           setGatewayState("disconnected", null, "gateway-not-configured");
           await waitForWake(signal);
