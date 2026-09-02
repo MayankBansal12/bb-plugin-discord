@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const serverSource = readFileSync(new URL("./server.ts", import.meta.url), "utf8");
+const migrationsSource = readFileSync(new URL("./migrations.ts", import.meta.url), "utf8");
 
 function rpcHandler(name: string): string {
   const match = serverSource.match(
@@ -47,7 +48,27 @@ test("durable configuration defaults to least privilege and automatic routing", 
   assert.match(serverSource, /permissionMode: "auto"/);
   assert.match(serverSource, /serverAccess: "messages"/);
   assert.match(serverSource, /allowDestructiveServerActions: false/);
-  assert.match(serverSource, /CREATE TABLE IF NOT EXISTS discord_config/);
+  assert.match(migrationsSource, /CREATE TABLE IF NOT EXISTS discord_config/);
+});
+
+test("new migrations are appended after the frozen v0.0.4 migration prefix", () => {
+  const legacyBlock = migrationsSource.match(
+    /export const legacyMigrations = \[([\s\S]*?)\n\] as const;/,
+  )?.[1];
+  const appendedBlock = migrationsSource.match(
+    /export const interactionActionMigrations = \[([\s\S]*?)\n\] as const;/,
+  )?.[1];
+
+  assert.ok(legacyBlock, "the legacy migration prefix should remain explicit");
+  assert.ok(appendedBlock, "the appended migration list should be present");
+  assert.match(legacyBlock, /ALTER TABLE discord_config ADD COLUMN reasoning_level TEXT/);
+  assert.match(legacyBlock, /ALTER TABLE discord_config ADD COLUMN service_tier TEXT/);
+  assert.doesNotMatch(legacyBlock, /discord_interaction_actions/);
+  assert.match(appendedBlock, /CREATE TABLE IF NOT EXISTS discord_interaction_actions/);
+  assert.match(
+    migrationsSource,
+    /export const migrations = \[\.\.\.legacyMigrations, \.\.\.interactionActionMigrations\]/,
+  );
 });
 
 test("the destructive-actions handler writes exactly one config value", () => {
