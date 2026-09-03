@@ -33,10 +33,10 @@ test("Discord-backed agent replies have one outbound delivery path", () => {
   assert.match(configuration, /context\.origin\.pluginId/);
   assert.match(
     configuration,
-    /getMapByBbThread\(context\.thread\.id\) !== undefined/,
+    /getInteractionMapByBbThread\(context\.thread\.id\) !== undefined/,
   );
   assert.match(configuration, /allowSendMessage: !isDiscordConversation/);
-  assert.match(registration, /getMapByBbThread\(bbThreadId\) !== undefined/);
+  assert.match(registration, /getInteractionMapByBbThread\(bbThreadId\) !== undefined/);
 });
 
 test("normal assistant output can target only its mapped Discord thread", () => {

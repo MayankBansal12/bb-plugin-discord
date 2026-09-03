@@ -78,4 +78,19 @@ export const interactionActionMigrations = [
     ON discord_interaction_actions(bb_thread_id, interaction_id)`,
 ] as const;
 
-export const migrations = [...legacyMigrations, ...interactionActionMigrations];
+export const interactionRouteMigrations = [
+  `CREATE TABLE IF NOT EXISTS discord_interaction_routes (
+    bb_thread_id TEXT PRIMARY KEY,
+    owner_bb_thread_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_activity_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS discord_interaction_routes_owner_idx
+    ON discord_interaction_routes(owner_bb_thread_id, last_activity_at)`,
+] as const;
+
+export const migrations = [
+  ...legacyMigrations,
+  ...interactionActionMigrations,
+  ...interactionRouteMigrations,
+];

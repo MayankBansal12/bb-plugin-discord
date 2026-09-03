@@ -15,6 +15,7 @@ import {
   prepareDiscordSession,
   pendingInteractionPrompt,
   rehydrateActiveThreadWatches,
+  resolveDiscordInteractionOwner,
   routeDiscordMessage,
   routeCreatesSession,
   resolveApprovalDecision,
@@ -120,6 +121,13 @@ interface InteractionActionRow {
   interaction_id: string;
   discord_channel_id: string;
   status: string;
+}
+
+interface InteractionRouteRow {
+  bb_thread_id: string;
+  owner_bb_thread_id: string;
+  created_at: number;
+  last_activity_at: number;
 }
 
 interface DiscordConfigRow {
@@ -888,6 +896,48 @@ export default async function plugin(bb: BbPluginApi) {
       .prepare("SELECT * FROM discord_threads WHERE discord_channel_id = ?")
       .get(discordChannelId) as ThreadMapRow | undefined;
 
+  const getInteractionRoute = (
+    bbThreadId: string,
+  ): InteractionRouteRow | undefined =>
+    db
+      .prepare("SELECT * FROM discord_interaction_routes WHERE bb_thread_id = ?")
+      .get(bbThreadId) as InteractionRouteRow | undefined;
+
+  const getInteractionMapByBbThread = (
+    bbThreadId: string,
+  ): ThreadMapRow | undefined => {
+    const direct = getMapByBbThread(bbThreadId);
+    if (direct) return direct;
+    const route = getInteractionRoute(bbThreadId);
+    return route ? getMapByBbThread(route.owner_bb_thread_id) : undefined;
+  };
+
+  const ensureInteractionRoute = (thread: {
+    id: string;
+    parentThreadId: string | null;
+  }): ThreadMapRow | undefined => {
+    const ownerBbThreadId = resolveDiscordInteractionOwner(
+      thread,
+      (threadId) => getMapByBbThread(threadId) !== undefined,
+      (threadId) => getInteractionRoute(threadId)?.owner_bb_thread_id,
+    );
+    if (!ownerBbThreadId) return undefined;
+    const map = getMapByBbThread(ownerBbThreadId);
+    if (!map) return undefined;
+    if (thread.id !== ownerBbThreadId) {
+      const now = Date.now();
+      db.prepare(
+        `INSERT INTO discord_interaction_routes
+          (bb_thread_id, owner_bb_thread_id, created_at, last_activity_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(bb_thread_id) DO UPDATE SET
+           owner_bb_thread_id = excluded.owner_bb_thread_id,
+           last_activity_at = excluded.last_activity_at`,
+      ).run(thread.id, ownerBbThreadId, now, now);
+    }
+    return map;
+  };
+
   const insertMap = (row: ThreadMapRow): void => {
     db.prepare(
       `INSERT INTO discord_threads
@@ -910,6 +960,18 @@ export default async function plugin(bb: BbPluginApi) {
     db.prepare(
       "UPDATE discord_threads SET last_activity_at = ? WHERE bb_thread_id = ?",
     ).run(Date.now(), bbThreadId);
+  };
+
+  const touchInteractionThread = (bbThreadId: string): void => {
+    const route = getInteractionRoute(bbThreadId);
+    if (route) {
+      db.prepare(
+        "UPDATE discord_interaction_routes SET last_activity_at = ? WHERE bb_thread_id = ?",
+      ).run(Date.now(), bbThreadId);
+      touchMap(route.owner_bb_thread_id);
+      return;
+    }
+    touchMap(bbThreadId);
   };
 
   const markMessageSeen = (messageId: string, channelId: string): boolean => {
@@ -1006,6 +1068,23 @@ export default async function plugin(bb: BbPluginApi) {
 
   const removeThreadState = (bbThreadId: string): void => {
     const remove = db.transaction(() => {
+      db.prepare(
+        `DELETE FROM discord_posted_interactions
+         WHERE bb_thread_id IN (
+           SELECT bb_thread_id FROM discord_interaction_routes
+           WHERE owner_bb_thread_id = ?
+         )`,
+      ).run(bbThreadId);
+      db.prepare(
+        `DELETE FROM discord_interaction_actions
+         WHERE bb_thread_id IN (
+           SELECT bb_thread_id FROM discord_interaction_routes
+           WHERE owner_bb_thread_id = ?
+         )`,
+      ).run(bbThreadId);
+      db.prepare(
+        "DELETE FROM discord_interaction_routes WHERE owner_bb_thread_id = ? OR bb_thread_id = ?",
+      ).run(bbThreadId, bbThreadId);
       db.prepare("DELETE FROM discord_threads WHERE bb_thread_id = ?").run(
         bbThreadId,
       );
@@ -1017,6 +1096,21 @@ export default async function plugin(bb: BbPluginApi) {
       ).run(bbThreadId);
       db.prepare(
         "DELETE FROM discord_interaction_actions WHERE bb_thread_id = ?",
+      ).run(bbThreadId);
+    });
+    remove();
+  };
+
+  const removeInteractionThreadState = (bbThreadId: string): void => {
+    const remove = db.transaction(() => {
+      db.prepare(
+        "DELETE FROM discord_posted_interactions WHERE bb_thread_id = ?",
+      ).run(bbThreadId);
+      db.prepare(
+        "DELETE FROM discord_interaction_actions WHERE bb_thread_id = ?",
+      ).run(bbThreadId);
+      db.prepare(
+        "DELETE FROM discord_interaction_routes WHERE bb_thread_id = ?",
       ).run(bbThreadId);
     });
     remove();
@@ -1070,7 +1164,7 @@ export default async function plugin(bb: BbPluginApi) {
     text: string,
     interaction: PendingInteractionLike,
   ): Promise<boolean> => {
-    const map = getMapByBbThread(bbThreadId);
+    const map = getInteractionMapByBbThread(bbThreadId);
     if (
       !map ||
       !client ||
@@ -1161,7 +1255,7 @@ export default async function plugin(bb: BbPluginApi) {
     intervalMs: ACTIVE_THREAD_WATCH_INTERVAL_MS,
     initiallyPaused: true,
     inspect: async (bbThreadId) => {
-      const map = getMapByBbThread(bbThreadId);
+      const map = getInteractionMapByBbThread(bbThreadId);
       if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) {
         activeThreadWatcher.stop(bbThreadId);
         return;
@@ -1179,13 +1273,13 @@ export default async function plugin(bb: BbPluginApi) {
     },
     onError: async (bbThreadId, error) => {
       if (isUnavailableDiscordChannelError(error)) {
-        const map = getMapByBbThread(bbThreadId);
+        const map = getInteractionMapByBbThread(bbThreadId);
         if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) {
           return "stop";
         }
 
         bb.log.warn(
-          `Discord session ${map.discord_thread_id} disappeared; stopping and unlinking bb thread ${bbThreadId}.`,
+          `Discord session ${map.discord_thread_id} disappeared; stopping and unlinking bb thread ${map.bb_thread_id}.`,
         );
         const notice =
           "⚠️ **I stopped the linked bb conversation.** Its Discord thread is unavailable. Mention me here to start a new conversation.";
@@ -1193,14 +1287,14 @@ export default async function plugin(bb: BbPluginApi) {
         const fallbackChannelId = homeChannelId();
         await detachUnavailableSession({
           stopBbThread: async () => {
-            await bb.sdk.threads.stop({ threadId: bbThreadId });
+            await bb.sdk.threads.stop({ threadId: map.bb_thread_id });
           },
           onStopError: (stopError) => {
             bb.log.warn(
-              `Could not stop detached bb thread ${bbThreadId}: ${errorMessage(stopError)}`,
+              `Could not stop detached bb thread ${map.bb_thread_id}: ${errorMessage(stopError)}`,
             );
           },
-          unlink: () => removeThreadState(bbThreadId),
+          unlink: () => removeThreadState(map.bb_thread_id),
           notifyParent: parentChannelId
             ? () => sendToDiscord(map.guild_id, parentChannelId, notice)
             : null,
@@ -1232,12 +1326,30 @@ export default async function plugin(bb: BbPluginApi) {
     void activeThreadWatcher.tick();
   };
 
+  const watchInteractionThread = (thread: {
+    id: string;
+    parentThreadId: string | null;
+  }): void => {
+    const map = ensureInteractionRoute(thread);
+    if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) return;
+    activeThreadWatcher.start(thread.id);
+    void activeThreadWatcher.tick();
+  };
+
   const rehydrateActiveThreads = async (): Promise<void> => {
     const guildId = effectiveGuildId();
     if (!guildId) return;
     const rows = db
-      .prepare("SELECT bb_thread_id FROM discord_threads WHERE guild_id = ?")
-      .all(guildId) as Array<{ bb_thread_id: string }>;
+      .prepare(
+        `SELECT bb_thread_id FROM discord_threads WHERE guild_id = ?
+         UNION
+         SELECT routes.bb_thread_id
+         FROM discord_interaction_routes AS routes
+         JOIN discord_threads AS owners
+           ON owners.bb_thread_id = routes.owner_bb_thread_id
+         WHERE owners.guild_id = ?`,
+      )
+      .all(guildId, guildId) as Array<{ bb_thread_id: string }>;
     await rehydrateActiveThreadWatches({
       threadIds: rows.map((row) => row.bb_thread_id),
       inspect: async (bbThreadId) => {
@@ -1394,12 +1506,24 @@ export default async function plugin(bb: BbPluginApi) {
     map: ThreadMapRow,
     message: DiscordInboundMessage,
   ): Promise<boolean> => {
-    const interactions = await bb.sdk.threads.interactions.list({
-      threadId: map.bb_thread_id,
-    });
-    const pending = interactions.filter(
-      (interaction) => interaction.status === "pending",
-    );
+    const routed = db
+      .prepare(
+        `SELECT bb_thread_id FROM discord_interaction_routes
+         WHERE owner_bb_thread_id = ? ORDER BY last_activity_at DESC`,
+      )
+      .all(map.bb_thread_id) as Array<{ bb_thread_id: string }>;
+    const pending: Array<{ threadId: string; interaction: unknown }> = [];
+    for (const threadId of [
+      map.bb_thread_id,
+      ...routed.map((row) => row.bb_thread_id),
+    ]) {
+      const interactions = await bb.sdk.threads.interactions.list({ threadId });
+      pending.push(
+        ...interactions
+          .filter((interaction) => interaction.status === "pending")
+          .map((interaction) => ({ threadId, interaction })),
+      );
+    }
     if (pending.length === 0) return false;
     if (pending.length > 1) {
       await sendToDiscord(
@@ -1410,9 +1534,10 @@ export default async function plugin(bb: BbPluginApi) {
       return true;
     }
 
-    const interaction = pending[0]!;
+    const target = pending[0]!;
+    const interaction = target.interaction as PendingInteractionLike;
     const action = resolveInteractionReply(
-      interaction as PendingInteractionLike,
+      interaction,
       message.content,
     );
     if (action.kind === "error") {
@@ -1422,18 +1547,18 @@ export default async function plugin(bb: BbPluginApi) {
 
     if (action.kind === "respond") {
       await bb.sdk.threads.interactions.respond({
-        threadId: map.bb_thread_id,
+        threadId: target.threadId,
         interactionId: interaction.id,
         value: action.value,
       });
     } else {
       await bb.sdk.threads.interactions.resolve({
-        threadId: map.bb_thread_id,
+        threadId: target.threadId,
         interactionId: interaction.id,
         resolution: action.resolution,
       });
     }
-    touchMap(map.bb_thread_id);
+    touchInteractionThread(target.threadId);
     return true;
   };
 
@@ -1456,7 +1581,7 @@ export default async function plugin(bb: BbPluginApi) {
           statusText: "⌛ This bb approval is no longer pending.",
         };
       }
-      const map = getMapByBbThread(stored.bb_thread_id);
+      const map = getInteractionMapByBbThread(stored.bb_thread_id);
       if (
         !map ||
         !isAuthorized(action.guildId, action.authorId) ||
@@ -1508,7 +1633,7 @@ export default async function plugin(bb: BbPluginApi) {
         action.decision,
         action.authorId,
       );
-      touchMap(stored.bb_thread_id);
+      touchInteractionThread(stored.bb_thread_id);
 
       const actor = `<@${action.authorId}>`;
       if (action.decision === "allow_once") {
@@ -1553,7 +1678,7 @@ export default async function plugin(bb: BbPluginApi) {
           statusText: "⌛ This bb question is no longer pending.",
         };
       }
-      const map = getMapByBbThread(stored.bb_thread_id);
+      const map = getInteractionMapByBbThread(stored.bb_thread_id);
       if (
         !map ||
         !isAuthorized(action.guildId, action.authorId) ||
@@ -1604,7 +1729,7 @@ export default async function plugin(bb: BbPluginApi) {
         action.selectedIndices.join(","),
         action.authorId,
       );
-      touchMap(stored.bb_thread_id);
+      touchInteractionThread(stored.bb_thread_id);
       return {
         outcome: "resolved",
         statusText: `✅ Answered by ${action.authorTag}.`,
@@ -1872,17 +1997,18 @@ export default async function plugin(bb: BbPluginApi) {
     getAccessLevel: accessLevel,
     allowsDestructive: () => cached.allowDestructiveServerActions === true,
     isDiscordConversation: (bbThreadId) =>
-      getMapByBbThread(bbThreadId) !== undefined,
+      getInteractionMapByBbThread(bbThreadId) !== undefined,
   });
 
   bb.agents.configure((context) => {
     // Origin attribution covers a brand-new conversation before its Discord
     // session mapping exists. The durable lookup covers mappings created by
     // older plugin versions that may not carry current attribution metadata.
+    ensureInteractionRoute(context.thread);
     const isDiscordConversation = isDiscordAgentConversation(
       bb.pluginId,
       context.origin.pluginId,
-      getMapByBbThread(context.thread.id) !== undefined,
+      getInteractionMapByBbThread(context.thread.id) !== undefined,
     );
     return {
       tools: availableToolNames(
@@ -1909,17 +2035,28 @@ export default async function plugin(bb: BbPluginApi) {
   // Thread lifecycle
   // ---------------------------------------------------------------------
 
+  bb.events.on("thread.created", ({ thread }) => {
+    ensureInteractionRoute(thread);
+  });
+
   bb.events.on("thread.active", ({ thread }) => {
-    watchActiveThread(thread.id);
+    watchInteractionThread(thread);
   });
 
   bb.events.on("thread.idle", async ({ thread, lastAssistantText }) => {
     activeThreadWatcher.stop(thread.id);
-    const map = getMapByBbThread(thread.id);
-    if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) return;
-    touchMap(thread.id);
+    const interactionMap =
+      getInteractionMapByBbThread(thread.id) ?? ensureInteractionRoute(thread);
+    if (
+      !interactionMap ||
+      !isActiveMappedGuild(interactionMap.guild_id, effectiveGuildId())
+    ) {
+      return;
+    }
+    touchInteractionThread(thread.id);
 
-    if (lastAssistantText?.trim()) {
+    const directMap = getMapByBbThread(thread.id);
+    if (directMap && lastAssistantText?.trim()) {
       const trimmed = lastAssistantText.trim();
       const replyHash = hashString(trimmed);
       if (!isReplyPosted(thread.id, replyHash)) {
@@ -1977,7 +2114,10 @@ export default async function plugin(bb: BbPluginApi) {
   bb.events.on("thread.deleted", async ({ thread }) => {
     activeThreadWatcher.stop(thread.id);
     const map = getMapByBbThread(thread.id);
-    if (!map) return;
+    if (!map) {
+      removeInteractionThreadState(thread.id);
+      return;
+    }
     if (isActiveMappedGuild(map.guild_id, effectiveGuildId())) {
       await sendToDiscord(
         map.guild_id,
@@ -2285,6 +2425,9 @@ export default async function plugin(bb: BbPluginApi) {
     db.prepare("DELETE FROM discord_interaction_actions WHERE created_at < ?").run(
       cutoff,
     );
+    db.prepare(
+      "DELETE FROM discord_interaction_routes WHERE last_activity_at < ?",
+    ).run(cutoff);
   });
 
   bb.onDispose(async () => {

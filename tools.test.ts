@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   availableToolNames,
   DESTRUCTIVE_TOOL_NAMES,
+  DISCORD_BRIDGE_AGENT_INSTRUCTIONS,
   DISCORD_BRIDGE_SEND_BLOCKED_MESSAGE,
   discordAuditReason,
   MANAGEMENT_TOOL_NAMES,
@@ -68,6 +69,12 @@ test("Discord-backed conversations cannot cross-post their automatic reply", () 
   for (const managed of [...MANAGEMENT_TOOL_NAMES, ...DESTRUCTIVE_TOOL_NAMES]) {
     assert.ok(names.includes(managed), `${managed} should remain available`);
   }
+});
+
+test("Discord agents preserve parent routing for delegated interaction UX", () => {
+  assert.match(DISCORD_BRIDGE_AGENT_INSTRUCTIONS, /select menus/);
+  assert.match(DISCORD_BRIDGE_AGENT_INSTRUCTIONS, /--parent-self/);
+  assert.match(DISCORD_BRIDGE_AGENT_INSTRUCTIONS, /do not tell the user/i);
 });
 
 test("an already-running Discord conversation is blocked at tool execution", async () => {

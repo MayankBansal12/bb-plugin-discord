@@ -10,6 +10,26 @@ export interface DiscordRouteMapping {
   discordParentChannelId: string | null;
 }
 
+export interface DiscordInteractionRouteThread {
+  id: string;
+  parentThreadId: string | null;
+}
+
+/**
+ * Route a child worker's approvals/questions back through the Discord session
+ * that owns its nearest recorded ancestor. Direct mappings always win.
+ */
+export function resolveDiscordInteractionOwner(
+  thread: DiscordInteractionRouteThread,
+  isDirectlyMapped: (threadId: string) => boolean,
+  routedOwner: (threadId: string) => string | undefined,
+): string | undefined {
+  if (isDirectlyMapped(thread.id)) return thread.id;
+  if (!thread.parentThreadId) return undefined;
+  if (isDirectlyMapped(thread.parentThreadId)) return thread.parentThreadId;
+  return routedOwner(thread.parentThreadId);
+}
+
 export type DiscordInboundRoute =
   | { kind: "ignore" }
   | { kind: "start-session" }

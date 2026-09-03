@@ -62,16 +62,21 @@ test("new migrations are appended after the frozen v0.0.4 migration prefix", () 
   const appendedBlock = migrationsSource.match(
     /export const interactionActionMigrations = \[([\s\S]*?)\n\] as const;/,
   )?.[1];
+  const routeBlock = migrationsSource.match(
+    /export const interactionRouteMigrations = \[([\s\S]*?)\n\] as const;/,
+  )?.[1];
 
   assert.ok(legacyBlock, "the legacy migration prefix should remain explicit");
   assert.ok(appendedBlock, "the appended migration list should be present");
+  assert.ok(routeBlock, "the interaction route migration list should be present");
   assert.match(legacyBlock, /ALTER TABLE discord_config ADD COLUMN reasoning_level TEXT/);
   assert.match(legacyBlock, /ALTER TABLE discord_config ADD COLUMN service_tier TEXT/);
   assert.doesNotMatch(legacyBlock, /discord_interaction_actions/);
   assert.match(appendedBlock, /CREATE TABLE IF NOT EXISTS discord_interaction_actions/);
+  assert.match(routeBlock, /CREATE TABLE IF NOT EXISTS discord_interaction_routes/);
   assert.match(
     migrationsSource,
-    /export const migrations = \[\.\.\.legacyMigrations, \.\.\.interactionActionMigrations\]/,
+    /\.\.\.legacyMigrations,[\s\S]*\.\.\.interactionActionMigrations,[\s\S]*\.\.\.interactionRouteMigrations/,
   );
 });
 

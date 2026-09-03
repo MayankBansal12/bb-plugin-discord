@@ -20,7 +20,7 @@ export interface DiscordToolDeps {
 }
 
 export const DISCORD_BRIDGE_AGENT_INSTRUCTIONS =
-  "This conversation is already linked to a dedicated Discord thread. Reply normally; your final assistant message is delivered there automatically. Do not claim that you posted a separate Discord message. If the user asks to post in another channel, explain that cross-channel posting must be started from a regular bb thread.";
+  "This conversation is already linked to a dedicated Discord thread. Reply normally; your final assistant message is delivered there automatically. Do not claim that you posted a separate Discord message. BB approvals and option-based AskUserQuestion interactions are rendered in Discord as buttons or select menus; do not tell the user Discord lacks those controls. When spawning or delegating a BB thread whose approvals or questions should return here, make this conversation its parent (with the bb CLI, pass --parent-self). If the user asks to post in another channel, explain that cross-channel posting must be started from a regular bb thread.";
 
 export const DISCORD_BRIDGE_SEND_BLOCKED_MESSAGE =
   "This bb conversation already replies through its linked Discord thread. Reply normally instead of calling discord_send_message. To post in another channel, start the request from a regular bb thread.";

@@ -13,6 +13,7 @@ import {
   normalizeOptionalDiscordSnowflake,
   prepareDiscordSession,
   rehydrateActiveThreadWatches,
+  resolveDiscordInteractionOwner,
   parseDiscordIds,
   pendingInteractionPrompt,
   pendingInteractionReplyInstructions,
@@ -32,6 +33,23 @@ test("Discord agent conversations are recognized before and after mapping", () =
   assert.equal(isDiscordAgentConversation("discord", null, true), true);
   assert.equal(isDiscordAgentConversation("discord", "side-chat", false), false);
   assert.equal(isDiscordAgentConversation("discord", null, false), false);
+});
+
+test("child and nested worker interactions inherit their Discord session owner", () => {
+  const direct = new Set(["discord-root"]);
+  const routes = new Map([["child", "discord-root"]]);
+  const resolve = (id: string, parentThreadId: string | null) =>
+    resolveDiscordInteractionOwner(
+      { id, parentThreadId },
+      (threadId) => direct.has(threadId),
+      (threadId) => routes.get(threadId),
+    );
+
+  assert.equal(resolve("discord-root", null), "discord-root");
+  assert.equal(resolve("child", "discord-root"), "discord-root");
+  assert.equal(resolve("grandchild", "child"), "discord-root");
+  assert.equal(resolve("unrelated", null), undefined);
+  assert.equal(resolve("unrelated-child", "unrelated"), undefined);
 });
 
 test("Discord approval component ids round-trip and reject foreign input", () => {
