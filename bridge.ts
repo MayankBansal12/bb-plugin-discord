@@ -35,6 +35,10 @@ export interface DiscordApprovalAction {
   decision: ApprovalDecision;
 }
 
+export interface DiscordQuestionAction {
+  token: string;
+}
+
 export interface UserQuestionPayload {
   kind: "user_question";
   questions: Array<{
@@ -42,7 +46,7 @@ export interface UserQuestionPayload {
     prompt: string;
     allowFreeText: boolean;
     multiSelect: boolean;
-    options?: Array<{ label: string; value: string }>;
+    options?: Array<{ description?: string; label: string; value: string }>;
   }>;
 }
 
@@ -94,14 +98,15 @@ const APPROVAL_REPLY_BY_DECISION = {
 } as const satisfies Record<ApprovalPayload["availableDecisions"][number], string>;
 
 const APPROVAL_ACTION_PREFIX = "bb-approval:v1";
-const APPROVAL_ACTION_TOKEN = /^[a-f0-9]{24}$/;
+const QUESTION_ACTION_PREFIX = "bb-question:v1";
+const INTERACTION_ACTION_TOKEN = /^[a-f0-9]{24}$/;
 
 /** Compact, versioned custom id for Discord buttons (Discord caps it at 100 chars). */
 export function discordApprovalActionId(
   token: string,
   decision: ApprovalDecision,
 ): string {
-  if (!APPROVAL_ACTION_TOKEN.test(token)) {
+  if (!INTERACTION_ACTION_TOKEN.test(token)) {
     throw new Error("Invalid Discord approval action token.");
   }
   return `${APPROVAL_ACTION_PREFIX}:${token}:${decision}`;
@@ -117,7 +122,7 @@ export function parseDiscordApprovalActionId(
     version !== "v1" ||
     extra !== undefined ||
     !token ||
-    !APPROVAL_ACTION_TOKEN.test(token) ||
+    !INTERACTION_ACTION_TOKEN.test(token) ||
     (decision !== "allow_once" &&
       decision !== "allow_for_session" &&
       decision !== "deny")
@@ -125,6 +130,62 @@ export function parseDiscordApprovalActionId(
     return null;
   }
   return { token, decision };
+}
+
+/** Compact, versioned custom id for a Discord question select menu. */
+export function discordQuestionActionId(token: string): string {
+  if (!INTERACTION_ACTION_TOKEN.test(token)) {
+    throw new Error("Invalid Discord question action token.");
+  }
+  return `${QUESTION_ACTION_PREFIX}:${token}`;
+}
+
+/** Ignore every select-menu id not owned by this bridge. */
+export function parseDiscordQuestionActionId(
+  customId: string,
+): DiscordQuestionAction | null {
+  const [prefix, version, token, extra] = customId.split(":");
+  if (
+    prefix !== "bb-question" ||
+    version !== "v1" ||
+    extra !== undefined ||
+    !token ||
+    !INTERACTION_ACTION_TOKEN.test(token)
+  ) {
+    return null;
+  }
+  return { token };
+}
+
+export interface DiscordQuestionControl {
+  allowFreeText: boolean;
+  multiSelect: boolean;
+  prompt: string;
+  options: Array<{ description?: string; label: string; value: string }>;
+  questionId: string;
+}
+
+/**
+ * Discord can answer one option-based question natively. More complex forms
+ * keep their text-reply fallback so no BB interaction shape is misrepresented.
+ */
+export function discordQuestionControl(
+  interaction: PendingInteractionLike,
+): DiscordQuestionControl | null {
+  const payload = interaction.payload;
+  if (payload.kind !== "user_question" || !("questions" in payload)) return null;
+  if (payload.questions.length !== 1) return null;
+  const question = payload.questions[0]!;
+  if (!question.options || question.options.length === 0 || question.options.length > 25) {
+    return null;
+  }
+  return {
+    allowFreeText: question.allowFreeText,
+    multiSelect: question.multiSelect,
+    prompt: question.prompt,
+    options: question.options,
+    questionId: question.id,
+  };
 }
 
 /**
@@ -212,6 +273,34 @@ export class ActiveThreadWatcher {
     } else if (!shouldRun && this.timer !== null) {
       this.scheduler.clearInterval(this.timer);
       this.timer = null;
+    }
+  }
+}
+
+/** Restore watches from durable mappings after a plugin or gateway restart. */
+export async function rehydrateActiveThreadWatches(options: {
+  threadIds: string[];
+  inspect: (
+    threadId: string,
+  ) => Promise<{ pendingInteractionCount: number; status: string }>;
+  watch: (threadId: string) => void;
+  onError: (threadId: string, error: unknown) => void;
+}): Promise<void> {
+  for (const threadId of options.threadIds) {
+    try {
+      const state = await options.inspect(threadId);
+      if (
+        state.pendingInteractionCount > 0 ||
+        state.status === "active" ||
+        state.status === "starting"
+      ) {
+        options.watch(threadId);
+      }
+    } catch (error) {
+      // An unreadable BB state may be transient. Conservatively keep the
+      // durable mapping watched so interaction discovery retries next tick.
+      options.watch(threadId);
+      options.onError(threadId, error);
     }
   }
 }
@@ -467,6 +556,36 @@ export function resolveApprovalDecision(
   };
 }
 
+/** Resolve option indices from the native Discord question control. */
+export function resolveQuestionSelection(
+  interaction: PendingInteractionLike,
+  selectedIndices: number[],
+): InteractionResolution {
+  const control = discordQuestionControl(interaction);
+  const unique = [...new Set(selectedIndices)];
+  if (
+    !control ||
+    unique.length === 0 ||
+    (!control.multiSelect && unique.length !== 1) ||
+    unique.some(
+      (index) => !Number.isInteger(index) || index < 0 || index >= control.options.length,
+    )
+  ) {
+    return { kind: "error", message: pendingInteractionPrompt(interaction) };
+  }
+  return {
+    kind: "resolve",
+    resolution: {
+      kind: "user_answer",
+      answers: {
+        [control.questionId]: {
+          selected: unique.map((index) => control.options[index]!.value),
+        },
+      },
+    },
+  };
+}
+
 export function describePendingInteraction(
   interaction: PendingInteractionLike,
 ): string {
@@ -491,8 +610,19 @@ export function describePendingInteraction(
 /** The one source of truth for choices advertised in Discord. */
 export function pendingInteractionReplyInstructions(
   interaction: PendingInteractionLike,
+  nativeControls = false,
 ): string {
   const payload = interaction.payload;
+  if (payload.kind === "user_question" && "questions" in payload) {
+    const control = nativeControls ? discordQuestionControl(interaction) : null;
+    if (!control) return "Reply here to answer.";
+    const selection = control.multiSelect
+      ? "Choose one or more options below"
+      : "Choose an option below";
+    return control.allowFreeText
+      ? `${selection}, or reply here with another answer.`
+      : `${selection}.`;
+  }
   if (payload.kind !== "approval" || !("availableDecisions" in payload)) {
     return "Reply here to answer.";
   }
@@ -503,16 +633,21 @@ export function pendingInteractionReplyInstructions(
   if (offered.length === 0) {
     return "Open bb to answer this approval request.";
   }
-  return `Reply ${joinChoices(offered)}.`;
+  const reply = `reply ${joinChoices(offered)}`;
+  return nativeControls
+    ? `Use a button below, or ${reply}.`
+    : `${reply[0]!.toUpperCase()}${reply.slice(1)}.`;
 }
 
 /** Subject plus instructions, shared by announcements and reply errors. */
 export function pendingInteractionPrompt(
   interaction: PendingInteractionLike,
   maxSubjectChars?: number,
+  nativeControls = false,
 ): string {
-  const subject = describePendingInteraction(interaction);
-  return `${maxSubjectChars ? truncate(subject, maxSubjectChars) : subject}\n_${pendingInteractionReplyInstructions(interaction)}_`;
+  const control = nativeControls ? discordQuestionControl(interaction) : null;
+  const subject = control?.prompt ?? describePendingInteraction(interaction);
+  return `${maxSubjectChars ? truncate(subject, maxSubjectChars) : subject}\n_${pendingInteractionReplyInstructions(interaction, nativeControls)}_`;
 }
 
 function parseQuestionAnswers(text: string, count: number): string[] | null {

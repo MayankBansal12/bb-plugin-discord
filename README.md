@@ -113,7 +113,9 @@ Unmentioned messages in parent channels are ignored. Mention the bot again in a 
 
 ### Questions and approvals
 
-Reply normally when bb asks one question. For several questions, use numbered lines:
+When bb asks one multiple-choice question, Discord shows a native select menu. Pick one option—or several when bb allows multiple selections—without typing a reply. If the question accepts a custom answer, replying normally remains available.
+
+Questions without options also accept a normal reply. For several questions, use numbered lines:
 
 ```text
 1: feature/discord
@@ -264,6 +266,6 @@ The Discord gateway runs as a supervised `bb.background.service`. Pairing state,
 
 - One paired Discord server per plugin installation.
 - One or more explicitly authorized Discord users.
-- Replies are sent per turn rather than streamed token by token.
+- Replies are sent per turn rather than streamed token by token. Long replies are split into consecutive Discord messages without truncating their text.
 - Plain text, bb questions, and bb approvals are bridged; other interaction types may still require opening bb.
 - Per-channel project routing is not available; all new Discord conversations use the plugin's configured project.

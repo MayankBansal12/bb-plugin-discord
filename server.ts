@@ -5,6 +5,7 @@ import type { BbPluginApi } from "@bb/plugin-sdk";
 import {
   ActiveThreadWatcher,
   detachUnavailableSession,
+  discordQuestionControl,
   discordSessionName,
   InteractionAnnouncementGuard,
   isAllowedSpawnLocation,
@@ -13,12 +14,13 @@ import {
   parseDiscordIds,
   prepareDiscordSession,
   pendingInteractionPrompt,
+  rehydrateActiveThreadWatches,
   routeDiscordMessage,
   routeCreatesSession,
   resolveApprovalDecision,
   resolveInteractionReply,
+  resolveQuestionSelection,
   shouldAlertHomeForFailure,
-  type ApprovalDecision,
   type PendingInteractionLike,
 } from "./bridge.js";
 import {
@@ -27,6 +29,8 @@ import {
   type DiscordApprovalActionResult,
   type DiscordInboundApprovalAction,
   type DiscordInboundMessage,
+  type DiscordInboundQuestionAction,
+  type DiscordQuestionActionResult,
 } from "./discord.js";
 import {
   classifyDiscordError,
@@ -82,7 +86,6 @@ import {
 } from "./execution.js";
 
 const MAX_PROMPT_CHARS = 8000;
-const MAX_REPLY_CHARS = 1800;
 const MAX_INTERACTION_PROMPT_CHARS = 1800;
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const ACTIVE_THREAD_WATCH_INTERVAL_MS = 5000;
@@ -962,7 +965,7 @@ export default async function plugin(bb: BbPluginApi) {
     ).run(bbThreadId, interactionId, Date.now());
   };
 
-  const approvalToken = (bbThreadId: string, interactionId: string): string =>
+  const interactionToken = (bbThreadId: string, interactionId: string): string =>
     createHash("sha256")
       .update(bbThreadId)
       .update("\0")
@@ -970,7 +973,7 @@ export default async function plugin(bb: BbPluginApi) {
       .digest("hex")
       .slice(0, 24);
 
-  const registerApprovalAction = (
+  const registerInteractionAction = (
     token: string,
     bbThreadId: string,
     interactionId: string,
@@ -983,22 +986,22 @@ export default async function plugin(bb: BbPluginApi) {
     ).run(token, bbThreadId, interactionId, discordChannelId, Date.now());
   };
 
-  const getApprovalAction = (token: string): InteractionActionRow | undefined =>
+  const getInteractionAction = (token: string): InteractionActionRow | undefined =>
     db
       .prepare("SELECT * FROM discord_interaction_actions WHERE token = ?")
       .get(token) as InteractionActionRow | undefined;
 
-  const finishApprovalAction = (
+  const finishInteractionAction = (
     token: string,
     status: "resolved" | "stale",
-    decision?: ApprovalDecision,
+    outcome?: string,
     userId?: string,
   ): void => {
     db.prepare(
       `UPDATE discord_interaction_actions
        SET status = ?, decision = ?, resolved_by_user_id = ?, resolved_at = ?
        WHERE token = ? AND status = 'pending'`,
-    ).run(status, decision ?? null, userId ?? null, Date.now(), token);
+    ).run(status, outcome ?? null, userId ?? null, Date.now(), token);
   };
 
   const removeThreadState = (bbThreadId: string): void => {
@@ -1079,13 +1082,14 @@ export default async function plugin(bb: BbPluginApi) {
     // A transient failure is retried on its next tick; a missing session is
     // detached by the watcher's permanent-channel error policy.
     const payload = interaction.payload;
+    const question = discordQuestionControl(interaction);
     if (
       payload.kind === "approval" &&
       "availableDecisions" in payload &&
       payload.availableDecisions.length > 0
     ) {
-      const token = approvalToken(bbThreadId, interaction.id);
-      registerApprovalAction(
+      const token = interactionToken(bbThreadId, interaction.id);
+      registerInteractionAction(
         token,
         bbThreadId,
         interaction.id,
@@ -1094,6 +1098,22 @@ export default async function plugin(bb: BbPluginApi) {
       await client.sendApprovalRequest(map.guild_id, map.discord_thread_id, text, {
         token,
         decisions: payload.availableDecisions,
+      });
+    } else if (question) {
+      const token = interactionToken(bbThreadId, interaction.id);
+      registerInteractionAction(
+        token,
+        bbThreadId,
+        interaction.id,
+        map.discord_thread_id,
+      );
+      await client.sendQuestionRequest(map.guild_id, map.discord_thread_id, text, {
+        token,
+        multiSelect: question.multiSelect,
+        options: question.options.map(({ description, label }) => ({
+          ...(description ? { description } : {}),
+          label,
+        })),
       });
     } else {
       await client.sendMessage(map.guild_id, map.discord_thread_id, text);
@@ -1111,9 +1131,16 @@ export default async function plugin(bb: BbPluginApi) {
       (interaction) => interaction.status === "pending",
     );
     for (const interaction of pending) {
+      const payload = (interaction as PendingInteractionLike).payload;
+      const nativeControls =
+        (payload.kind === "approval" &&
+          "availableDecisions" in payload &&
+          payload.availableDecisions.length > 0) ||
+        discordQuestionControl(interaction as PendingInteractionLike) !== null;
       const prompt = pendingInteractionPrompt(
         interaction as PendingInteractionLike,
         MAX_INTERACTION_PROMPT_CHARS,
+        nativeControls,
       );
       await announcementGuard.postOnce({
         key: `${bbThreadId}:${interaction.id}`,
@@ -1141,7 +1168,13 @@ export default async function plugin(bb: BbPluginApi) {
       }
 
       const pendingCount = await announcePendingInteractions(bbThreadId);
-      if (pendingCount > 0 || !client) return;
+      if (pendingCount > 0) return;
+      const thread = await bb.sdk.threads.get({ threadId: bbThreadId });
+      if (thread.status !== "active" && thread.status !== "starting") {
+        activeThreadWatcher.stop(bbThreadId);
+        return;
+      }
+      if (!client) return;
       await client.sendTyping(map.guild_id, map.discord_thread_id);
     },
     onError: async (bbThreadId, error) => {
@@ -1197,6 +1230,34 @@ export default async function plugin(bb: BbPluginApi) {
     if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) return;
     activeThreadWatcher.start(bbThreadId);
     void activeThreadWatcher.tick();
+  };
+
+  const rehydrateActiveThreads = async (): Promise<void> => {
+    const guildId = effectiveGuildId();
+    if (!guildId) return;
+    const rows = db
+      .prepare("SELECT bb_thread_id FROM discord_threads WHERE guild_id = ?")
+      .all(guildId) as Array<{ bb_thread_id: string }>;
+    await rehydrateActiveThreadWatches({
+      threadIds: rows.map((row) => row.bb_thread_id),
+      inspect: async (bbThreadId) => {
+        const [thread, interactions] = await Promise.all([
+          bb.sdk.threads.get({ threadId: bbThreadId }),
+          bb.sdk.threads.interactions.list({ threadId: bbThreadId }),
+        ]);
+        const pendingInteractionCount = interactions.filter(
+          (interaction) => interaction.status === "pending",
+        ).length;
+        return { pendingInteractionCount, status: thread.status };
+      },
+      watch: (bbThreadId) => activeThreadWatcher.start(bbThreadId),
+      onError: (bbThreadId, error) => {
+        bb.log.warn(
+          `Could not restore Discord watch for ${bbThreadId}: ${errorMessage(error)}`,
+        );
+      },
+    });
+    await activeThreadWatcher.tick();
   };
 
   const spawnBbThread = async (
@@ -1344,7 +1405,7 @@ export default async function plugin(bb: BbPluginApi) {
       await sendToDiscord(
         message.guildId,
         message.channelId,
-        "⚠️ I found multiple pending bb requests. Use the buttons on the request you want to answer, or open the bb thread.",
+        "⚠️ I found multiple pending bb requests. Use the controls on the request you want to answer, or open the bb thread.",
       );
       return true;
     }
@@ -1376,19 +1437,19 @@ export default async function plugin(bb: BbPluginApi) {
     return true;
   };
 
-  const resolvingApprovalTokens = new Set<string>();
+  const resolvingInteractionTokens = new Set<string>();
   const handleApprovalAction = async (
     action: DiscordInboundApprovalAction,
   ): Promise<DiscordApprovalActionResult> => {
-    if (resolvingApprovalTokens.has(action.token)) {
+    if (resolvingInteractionTokens.has(action.token)) {
       return {
         outcome: "retry",
         errorText: "That approval is already being processed. Please wait a moment.",
       };
     }
-    resolvingApprovalTokens.add(action.token);
+    resolvingInteractionTokens.add(action.token);
     try {
-      const stored = getApprovalAction(action.token);
+      const stored = getInteractionAction(action.token);
       if (!stored || stored.status !== "pending") {
         return {
           outcome: "stale",
@@ -1418,7 +1479,7 @@ export default async function plugin(bb: BbPluginApi) {
           candidate.id === stored.interaction_id && candidate.status === "pending",
       );
       if (!interaction) {
-        finishApprovalAction(action.token, "stale");
+        finishInteractionAction(action.token, "stale");
         return {
           outcome: "stale",
           statusText: "⌛ This bb approval was already answered or expired.",
@@ -1430,7 +1491,7 @@ export default async function plugin(bb: BbPluginApi) {
         action.decision,
       );
       if (resolution.kind !== "resolve") {
-        finishApprovalAction(action.token, "stale");
+        finishInteractionAction(action.token, "stale");
         return {
           outcome: "stale",
           statusText: "⌛ That choice is not available for this bb approval.",
@@ -1441,7 +1502,7 @@ export default async function plugin(bb: BbPluginApi) {
         interactionId: stored.interaction_id,
         resolution: resolution.resolution,
       });
-      finishApprovalAction(
+      finishInteractionAction(
         action.token,
         "resolved",
         action.decision,
@@ -1470,7 +1531,95 @@ export default async function plugin(bb: BbPluginApi) {
           "bb could not apply that decision yet. The approval is still open; please try again.",
       };
     } finally {
-      resolvingApprovalTokens.delete(action.token);
+      resolvingInteractionTokens.delete(action.token);
+    }
+  };
+
+  const handleQuestionAction = async (
+    action: DiscordInboundQuestionAction,
+  ): Promise<DiscordQuestionActionResult> => {
+    if (resolvingInteractionTokens.has(action.token)) {
+      return {
+        outcome: "retry",
+        errorText: "That answer is already being processed. Please wait a moment.",
+      };
+    }
+    resolvingInteractionTokens.add(action.token);
+    try {
+      const stored = getInteractionAction(action.token);
+      if (!stored || stored.status !== "pending") {
+        return {
+          outcome: "stale",
+          statusText: "⌛ This bb question is no longer pending.",
+        };
+      }
+      const map = getMapByBbThread(stored.bb_thread_id);
+      if (
+        !map ||
+        !isAuthorized(action.guildId, action.authorId) ||
+        !isActiveMappedGuild(map.guild_id, effectiveGuildId()) ||
+        map.guild_id !== action.guildId ||
+        map.discord_thread_id !== action.channelId ||
+        stored.discord_channel_id !== action.channelId
+      ) {
+        return {
+          outcome: "retry",
+          errorText: "This question does not belong to this Discord conversation.",
+        };
+      }
+
+      const interactions = await bb.sdk.threads.interactions.list({
+        threadId: stored.bb_thread_id,
+      });
+      const interaction = interactions.find(
+        (candidate) =>
+          candidate.id === stored.interaction_id && candidate.status === "pending",
+      );
+      if (!interaction) {
+        finishInteractionAction(action.token, "stale");
+        return {
+          outcome: "stale",
+          statusText: "⌛ This bb question was already answered or expired.",
+        };
+      }
+
+      const resolution = resolveQuestionSelection(
+        interaction as PendingInteractionLike,
+        action.selectedIndices,
+      );
+      if (resolution.kind !== "resolve") {
+        return {
+          outcome: "retry",
+          errorText: "That option is no longer available. Please answer in bb.",
+        };
+      }
+      await bb.sdk.threads.interactions.resolve({
+        threadId: stored.bb_thread_id,
+        interactionId: stored.interaction_id,
+        resolution: resolution.resolution,
+      });
+      finishInteractionAction(
+        action.token,
+        "resolved",
+        action.selectedIndices.join(","),
+        action.authorId,
+      );
+      touchMap(stored.bb_thread_id);
+      return {
+        outcome: "resolved",
+        statusText: `✅ Answered by ${action.authorTag}.`,
+      };
+    } catch (error) {
+      bb.log.warn(
+        `Could not resolve Discord question ${action.token}: ${errorMessage(error)}`,
+      );
+      return {
+        outcome: "retry",
+        errorText:
+          "bb could not apply that answer yet. The question is still open; please try again.",
+      };
+    } finally {
+      resolvingInteractionTokens.delete(action.token);
     }
   };
 
@@ -1774,10 +1923,7 @@ export default async function plugin(bb: BbPluginApi) {
       const trimmed = lastAssistantText.trim();
       const replyHash = hashString(trimmed);
       if (!isReplyPosted(thread.id, replyHash)) {
-        const posted = await postToThreadChannel(
-          thread.id,
-          truncate(trimmed, MAX_REPLY_CHARS),
-        );
+        const posted = await postToThreadChannel(thread.id, trimmed);
         if (posted) markReplyPosted(thread.id, replyHash);
       }
     }
@@ -2031,6 +2177,7 @@ export default async function plugin(bb: BbPluginApi) {
       botUserId: getBotUserId,
       onMessage: handleInbound,
       onApprovalAction: handleApprovalAction,
+      onQuestionAction: handleQuestionAction,
       onReady: async (tag) => {
         botTag = tag;
         setGatewayState("connected", null, "gateway-connected");
@@ -2048,7 +2195,11 @@ export default async function plugin(bb: BbPluginApi) {
         );
         if (ready) {
           activeThreadWatcher.resume();
-          void activeThreadWatcher.tick();
+          void rehydrateActiveThreads().catch((error) => {
+            bb.log.warn(
+              `Could not restore Discord active-thread watches: ${errorMessage(error)}`,
+            );
+          });
         } else {
           activeThreadWatcher.pause();
         }
