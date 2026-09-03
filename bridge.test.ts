@@ -7,6 +7,7 @@ import {
   discordApprovalActionId,
   discordSessionName,
   isAllowedSpawnLocation,
+  isDiscordAgentConversation,
   normalizeOptionalDiscordSnowflake,
   prepareDiscordSession,
   parseDiscordIds,
@@ -20,6 +21,13 @@ import {
   resolveApprovalDecision,
   shouldAlertHomeForFailure,
 } from "./bridge.js";
+
+test("Discord agent conversations are recognized before and after mapping", () => {
+  assert.equal(isDiscordAgentConversation("discord", "discord", false), true);
+  assert.equal(isDiscordAgentConversation("discord", null, true), true);
+  assert.equal(isDiscordAgentConversation("discord", "side-chat", false), false);
+  assert.equal(isDiscordAgentConversation("discord", null, false), false);
+});
 
 test("Discord approval component ids round-trip and reject foreign input", () => {
   const token = "0123456789abcdef01234567";

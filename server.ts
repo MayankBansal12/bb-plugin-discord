@@ -8,6 +8,7 @@ import {
   discordSessionName,
   InteractionAnnouncementGuard,
   isAllowedSpawnLocation,
+  isDiscordAgentConversation,
   normalizeOptionalDiscordSnowflake,
   parseDiscordIds,
   prepareDiscordSession,
@@ -42,7 +43,11 @@ import {
   type DiscordAccessLevel,
   type PendingPairingCode,
 } from "./pairing.js";
-import { availableToolNames, registerDiscordTools } from "./tools.js";
+import {
+  availableToolNames,
+  DISCORD_BRIDGE_AGENT_INSTRUCTIONS,
+  registerDiscordTools,
+} from "./tools.js";
 import { migrations } from "./migrations.js";
 import {
   discordRpcContract,
@@ -1717,16 +1722,39 @@ export default async function plugin(bb: BbPluginApi) {
     getGuildId: () => effectiveGuildId(),
     getAccessLevel: accessLevel,
     allowsDestructive: () => cached.allowDestructiveServerActions === true,
+    isDiscordConversation: (bbThreadId) =>
+      getMapByBbThread(bbThreadId) !== undefined,
   });
 
-  bb.agents.configure(() => ({
-    tools: availableToolNames(
-      accessLevel(),
-      cached.allowDestructiveServerActions === true,
-      isPaired(),
-    ),
-    skills: [],
-  }));
+  bb.agents.configure((context) => {
+    // Origin attribution covers a brand-new conversation before its Discord
+    // session mapping exists. The durable lookup covers mappings created by
+    // older plugin versions that may not carry current attribution metadata.
+    const isDiscordConversation = isDiscordAgentConversation(
+      bb.pluginId,
+      context.origin.pluginId,
+      getMapByBbThread(context.thread.id) !== undefined,
+    );
+    return {
+      tools: availableToolNames(
+        accessLevel(),
+        cached.allowDestructiveServerActions === true,
+        isPaired(),
+        // A Discord-backed bb thread already has one authoritative outbound
+        // path: its final assistant text is relayed to the mapped Discord
+        // thread by the lifecycle handler below. Giving that same agent the
+        // generic send tool lets it accidentally cross-post a reply to the
+        // parent channel and then relay a second confirmation to the thread.
+        { allowSendMessage: !isDiscordConversation },
+      ),
+      skills: [],
+      ...(isDiscordConversation
+        ? {
+            instructions: DISCORD_BRIDGE_AGENT_INSTRUCTIONS,
+          }
+        : {}),
+    };
+  });
 
   // ---------------------------------------------------------------------
   // Thread lifecycle

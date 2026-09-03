@@ -293,6 +293,19 @@ export function routeCreatesSession(route: DiscordInboundRoute): boolean {
   return route.kind === "start-session" || route.kind === "migrate-legacy-session";
 }
 
+/**
+ * Identify the bb threads whose final assistant text is already transported
+ * by this bridge. Attribution is available before a new mapping is inserted;
+ * the mapping keeps legacy conversations covered after upgrades.
+ */
+export function isDiscordAgentConversation(
+  pluginId: string,
+  originPluginId: string | null,
+  hasDiscordMapping: boolean,
+): boolean {
+  return originPluginId === pluginId || hasDiscordMapping;
+}
+
 /** Spawn bb first so a failed spawn can never leave a Discord session behind. */
 export async function prepareDiscordSession<TThread, TSession>(operations: {
   spawnBbThread: () => Promise<TThread>;

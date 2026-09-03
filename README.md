@@ -182,6 +182,8 @@ Permission modes:
 
 Once paired, bb threads can use tools against the paired server. Tool availability follows the access level saved in the plugin settings.
 
+Discord-backed conversations do not receive `discord_send_message`: their normal assistant reply is already delivered automatically to the dedicated Discord thread. This prevents a reply from being cross-posted to the parent channel and then echoed again in the thread. Other bb threads can still use the send tool normally.
+
 ### Messages only
 
 This least-privilege default can inspect the server and work with messages and threads.
