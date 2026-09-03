@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   interactionActionMigrations,
+  interactionMessageMigrations,
   interactionRouteMigrations,
   legacyMigrations,
   migrations,
@@ -34,6 +35,10 @@ function assertCurrentSchema(db: DatabaseSync): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get("discord_interaction_actions") as { name: string } | undefined;
   assert.equal(actionTable?.name, "discord_interaction_actions");
+  const actionColumns = db
+    .prepare("PRAGMA table_info(discord_interaction_actions)")
+    .all() as Array<{ name: string }>;
+  assert.ok(actionColumns.some(({ name }) => name === "discord_message_id"));
 
   const routeTable = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
@@ -93,5 +98,13 @@ test("interaction routes are appended after the already-shipped action migration
   assert.equal(
     migrations[legacyMigrations.length + interactionActionMigrations.length],
     interactionRouteMigrations[0],
+  );
+  assert.equal(
+    migrations[
+      legacyMigrations.length +
+        interactionActionMigrations.length +
+        interactionRouteMigrations.length
+    ],
+    interactionMessageMigrations[0],
   );
 });

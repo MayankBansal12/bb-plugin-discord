@@ -121,6 +121,7 @@ interface InteractionActionRow {
   bb_thread_id: string;
   interaction_id: string;
   discord_channel_id: string;
+  discord_message_id: string | null;
   status: string;
 }
 
@@ -1092,6 +1093,14 @@ export default async function plugin(bb: BbPluginApi) {
     ).run(token, bbThreadId, interactionId, discordChannelId, Date.now());
   };
 
+  const attachInteractionMessage = (token: string, messageId: string): void => {
+    db.prepare(
+      `UPDATE discord_interaction_actions
+       SET discord_message_id = ?
+       WHERE token = ? AND status = 'pending'`,
+    ).run(messageId, token);
+  };
+
   const getInteractionAction = (token: string): InteractionActionRow | undefined =>
     db
       .prepare("SELECT * FROM discord_interaction_actions WHERE token = ?")
@@ -1109,6 +1118,24 @@ export default async function plugin(bb: BbPluginApi) {
        WHERE token = ? AND status = 'pending'`,
     ).run(status, outcome ?? null, userId ?? null, Date.now(), token);
   };
+
+  const pendingInteractionActions = (
+    bbThreadId: string,
+    interactionId?: string,
+  ): InteractionActionRow[] =>
+    (interactionId
+      ? db
+          .prepare(
+            `SELECT * FROM discord_interaction_actions
+             WHERE bb_thread_id = ? AND interaction_id = ? AND status = 'pending'`,
+          )
+          .all(bbThreadId, interactionId)
+      : db
+          .prepare(
+            `SELECT * FROM discord_interaction_actions
+             WHERE bb_thread_id = ? AND status = 'pending'`,
+          )
+          .all(bbThreadId)) as InteractionActionRow[];
 
   const removeThreadState = (bbThreadId: string): void => {
     const remove = db.transaction(() => {
@@ -1233,10 +1260,16 @@ export default async function plugin(bb: BbPluginApi) {
         interaction.id,
         map.discord_thread_id,
       );
-      await client.sendApprovalRequest(map.guild_id, map.discord_thread_id, text, {
-        token,
-        decisions: payload.availableDecisions,
-      });
+      const messageId = await client.sendApprovalRequest(
+        map.guild_id,
+        map.discord_thread_id,
+        text,
+        {
+          token,
+          decisions: payload.availableDecisions,
+        },
+      );
+      attachInteractionMessage(token, messageId);
     } else if (question) {
       const token = interactionToken(bbThreadId, interaction.id);
       registerInteractionAction(
@@ -1245,18 +1278,70 @@ export default async function plugin(bb: BbPluginApi) {
         interaction.id,
         map.discord_thread_id,
       );
-      await client.sendQuestionRequest(map.guild_id, map.discord_thread_id, text, {
-        token,
-        multiSelect: question.multiSelect,
-        options: question.options.map(({ description, label }) => ({
-          ...(description ? { description } : {}),
-          label,
-        })),
-      });
+      const messageId = await client.sendQuestionRequest(
+        map.guild_id,
+        map.discord_thread_id,
+        text,
+        {
+          token,
+          multiSelect: question.multiSelect,
+          options: question.options.map(({ description, label }) => ({
+            ...(description ? { description } : {}),
+            label,
+          })),
+        },
+      );
+      attachInteractionMessage(token, messageId);
     } else {
       await client.sendMessage(map.guild_id, map.discord_thread_id, text);
     }
     return true;
+  };
+
+  const closeInteractionControls = async (
+    bbThreadId: string,
+    interactionId: string,
+    status: "resolved" | "stale",
+    statusText: string,
+    outcome?: string,
+    userId?: string,
+  ): Promise<void> => {
+    const actions = pendingInteractionActions(bbThreadId, interactionId);
+    const map = getInteractionMapByBbThread(bbThreadId);
+    for (const action of actions) {
+      finishInteractionAction(action.token, status, outcome, userId);
+      if (!client || !map || !action.discord_message_id) continue;
+      try {
+        await client.closeInteractionRequest(
+          map.guild_id,
+          action.discord_channel_id,
+          action.discord_message_id,
+          statusText,
+        );
+      } catch (error) {
+        // BB is already resolved. A later click still sees the durable stale
+        // action and closes the controls, so a cosmetic edit must not retry
+        // the user's answer against BB.
+        bb.log.warn(
+          `Could not close Discord controls for ${interactionId}: ${errorMessage(error)}`,
+        );
+      }
+    }
+  };
+
+  const reconcileClosedInteractionControls = async (
+    bbThreadId: string,
+    openInteractionIds: ReadonlySet<string>,
+  ): Promise<void> => {
+    for (const action of pendingInteractionActions(bbThreadId)) {
+      if (openInteractionIds.has(action.interaction_id)) continue;
+      await closeInteractionControls(
+        bbThreadId,
+        action.interaction_id,
+        "stale",
+        "⌛ This bb request was answered or closed in bb.",
+      );
+    }
   };
 
   const announcePendingInteractions = async (
@@ -1267,6 +1352,17 @@ export default async function plugin(bb: BbPluginApi) {
     });
     const pending = interactions.filter(
       (interaction) => interaction.status === "pending",
+    );
+    await reconcileClosedInteractionControls(
+      bbThreadId,
+      new Set(
+        interactions
+          .filter(
+            (interaction) =>
+              interaction.status === "pending" || interaction.status === "resolving",
+          )
+          .map((interaction) => interaction.id),
+      ),
     );
     for (const interaction of pending) {
       const payload = (interaction as PendingInteractionLike).payload;
@@ -1602,6 +1698,18 @@ export default async function plugin(bb: BbPluginApi) {
         resolution: action.resolution,
       });
     }
+    const statusText =
+      interaction.payload.kind === "approval"
+        ? `✅ Approval answered by ${message.authorTag}.`
+        : `✅ Answered by ${message.authorTag}.`;
+    await closeInteractionControls(
+      target.threadId,
+      interaction.id,
+      "resolved",
+      statusText,
+      message.content,
+      message.authorId,
+    );
     touchInteractionThread(target.threadId);
     return true;
   };
@@ -1632,7 +1740,9 @@ export default async function plugin(bb: BbPluginApi) {
         !isActiveMappedGuild(map.guild_id, effectiveGuildId()) ||
         map.guild_id !== action.guildId ||
         map.discord_thread_id !== action.channelId ||
-        stored.discord_channel_id !== action.channelId
+        stored.discord_channel_id !== action.channelId ||
+        (stored.discord_message_id !== null &&
+          stored.discord_message_id !== action.messageId)
       ) {
         return {
           outcome: "retry",
@@ -1729,7 +1839,9 @@ export default async function plugin(bb: BbPluginApi) {
         !isActiveMappedGuild(map.guild_id, effectiveGuildId()) ||
         map.guild_id !== action.guildId ||
         map.discord_thread_id !== action.channelId ||
-        stored.discord_channel_id !== action.channelId
+        stored.discord_channel_id !== action.channelId ||
+        (stored.discord_message_id !== null &&
+          stored.discord_message_id !== action.messageId)
       ) {
         return {
           outcome: "retry",

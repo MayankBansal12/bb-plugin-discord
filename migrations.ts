@@ -89,8 +89,13 @@ export const interactionRouteMigrations = [
     ON discord_interaction_routes(owner_bb_thread_id, last_activity_at)`,
 ] as const;
 
+export const interactionMessageMigrations = [
+  `ALTER TABLE discord_interaction_actions ADD COLUMN discord_message_id TEXT`,
+] as const;
+
 export const migrations = [
   ...legacyMigrations,
   ...interactionActionMigrations,
   ...interactionRouteMigrations,
+  ...interactionMessageMigrations,
 ];

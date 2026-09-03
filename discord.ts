@@ -387,6 +387,29 @@ export class DiscordClient {
     return message.id;
   }
 
+  async closeInteractionRequest(
+    guildId: string,
+    channelId: string,
+    messageId: string,
+    statusText: string,
+  ): Promise<void> {
+    const channel = await this.fetchGuildChannel(guildId, channelId, true);
+    if (!channel || !("messages" in channel)) {
+      throw new Error(`Channel ${channelId} does not contain messages`);
+    }
+    try {
+      const message = await (
+        channel as TextChannel | ThreadChannel
+      ).messages.fetch(messageId);
+      await message.edit({
+        content: resolvedInteractionContent(message.content, statusText),
+        components: [],
+      });
+    } catch (error) {
+      throw toFriendlyError(error);
+    }
+  }
+
   async sendTyping(guildId: string, channelId: string): Promise<void> {
     const channel = await this.fetchGuildChannel(guildId, channelId, true);
     if (!channel.isTextBased() || !("sendTyping" in channel)) {
@@ -784,7 +807,7 @@ export class DiscordClient {
     }
     const original = interaction.message.content.trim();
     await interaction.editReply({
-      content: `${original}${original ? "\n\n" : ""}${result.statusText}`,
+      content: resolvedInteractionContent(original, result.statusText),
       components: [],
     });
   }
@@ -846,7 +869,7 @@ export class DiscordClient {
     }
     const original = interaction.message.content.trim();
     await interaction.editReply({
-      content: `${original}${original ? "\n\n" : ""}${result.statusText}`,
+      content: resolvedInteractionContent(original, result.statusText),
       components: [],
     });
   }
@@ -978,6 +1001,20 @@ function truncateComponentText(text: string, max: number): string {
     end -= 1;
   }
   return `${text.slice(0, end)}…`;
+}
+
+/** Keep the terminal status visible without exceeding Discord's hard limit. */
+export function resolvedInteractionContent(
+  original: string,
+  statusText: string,
+): string {
+  const status = statusText.trim();
+  if (!original.trim()) return truncateComponentText(status, 2000);
+  const separator = "\n\n";
+  const available = 2000 - separator.length - status.length;
+  if (available < 2) return truncateComponentText(status, 2000);
+  const subject = truncateComponentText(original.trim(), available);
+  return `${subject}${separator}${status}`;
 }
 
 function isHighSurrogate(code: number): boolean {

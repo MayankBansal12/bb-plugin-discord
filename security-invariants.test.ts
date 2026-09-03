@@ -55,3 +55,17 @@ test("normal assistant output can target only its mapped Discord thread", () => 
   assert.doesNotMatch(idleHandler, /sendToDiscord|postToHome|discord_parent_channel_id/);
   assert.doesNotMatch(idleHandler, /MAX_REPLY_CHARS|truncate\(trimmed/);
 });
+
+test("Discord interaction actions are bound to their original message", () => {
+  const approvalHandler = serverSource.match(
+    /const handleApprovalAction = async \(([\s\S]*?)\n  const handleQuestionAction/,
+  )?.[1];
+  const questionHandler = serverSource.match(
+    /const handleQuestionAction = async \(([\s\S]*?)\n  const handlePairingMessage/,
+  )?.[1];
+
+  assert.ok(approvalHandler, "approval action handler should be present");
+  assert.ok(questionHandler, "question action handler should be present");
+  assert.match(approvalHandler, /stored\.discord_message_id !== action\.messageId/);
+  assert.match(questionHandler, /stored\.discord_message_id !== action\.messageId/);
+});

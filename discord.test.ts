@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   chunkForDiscord,
   DiscordClient,
+  resolvedInteractionContent,
   type DiscordClientOptions,
 } from "./discord.js";
 
@@ -271,6 +272,54 @@ test("long messages are split without losing text or Unicode", async () => {
     const start = sent[index + 1]!.charCodeAt(0);
     assert.equal(end >= 0xd800 && end <= 0xdbff && start >= 0xdc00 && start <= 0xdfff, false);
   }
+});
+
+test("resolved interaction messages preserve status within Discord's limit", () => {
+  const status =
+    "✅ Allowed for this bb session. Similar requests may proceed without another prompt.";
+  const content = resolvedInteractionContent("🔥".repeat(1200), status);
+
+  assert.ok(content.length <= 2000);
+  assert.ok(content.endsWith(status));
+  assert.equal(content.includes("\ud83d…"), false);
+});
+
+test("interaction controls can be closed after a typed or in-bb answer", async () => {
+  const client = makeClient();
+  let edited: unknown;
+  const channel = {
+    guildId: "guild-1",
+    archived: false,
+    isDMBased: () => false,
+    isThread: () => true,
+    messages: {
+      fetch: async (messageId: string) => {
+        assert.equal(messageId, "message-1");
+        return {
+          content: "Approval requested",
+          edit: async (payload: unknown) => {
+            edited = payload;
+          },
+        };
+      },
+    },
+  };
+  const internal = client as unknown as {
+    client: { channels: { fetch: () => Promise<unknown> } };
+  };
+  internal.client.channels.fetch = async () => channel;
+
+  await client.closeInteractionRequest(
+    "guild-1",
+    "channel-1",
+    "message-1",
+    "✅ Approved by person.",
+  );
+
+  assert.deepEqual(edited, {
+    content: "Approval requested\n\n✅ Approved by person.",
+    components: [],
+  });
 });
 
 test("unauthorized approval clicks are ephemeral and never reach BB", async () => {
