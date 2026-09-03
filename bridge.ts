@@ -16,6 +16,32 @@ export interface DiscordInteractionRouteThread {
 }
 
 /**
+ * Find the most recent bb thread that delegated work to this thread. Event
+ * rows are accepted as unknown so this remains safe across SDK event unions.
+ */
+export function discordInteractionSenderThreadId(
+  events: readonly unknown[],
+): string | undefined {
+  for (const event of events) {
+    if (!event || typeof event !== "object") continue;
+    const candidate = event as { type?: unknown; data?: unknown };
+    if (
+      candidate.type !== "client/turn/requested" ||
+      !candidate.data ||
+      typeof candidate.data !== "object"
+    ) {
+      continue;
+    }
+    const senderThreadId = (candidate.data as { senderThreadId?: unknown })
+      .senderThreadId;
+    if (typeof senderThreadId !== "string") continue;
+    const normalized = senderThreadId.trim();
+    if (normalized) return normalized;
+  }
+  return undefined;
+}
+
+/**
  * Route a child worker's approvals/questions back through the Discord session
  * that owns its nearest recorded ancestor. Direct mappings always win.
  */

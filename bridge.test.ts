@@ -5,6 +5,7 @@ import {
   detachUnavailableSession,
   describePendingInteraction,
   discordApprovalActionId,
+  discordInteractionSenderThreadId,
   discordQuestionActionId,
   discordQuestionControl,
   discordSessionName,
@@ -50,6 +51,37 @@ test("child and nested worker interactions inherit their Discord session owner",
   assert.equal(resolve("grandchild", "child"), "discord-root");
   assert.equal(resolve("unrelated", null), undefined);
   assert.equal(resolve("unrelated-child", "unrelated"), undefined);
+});
+
+test("delegated interaction routing finds the latest recorded sender thread", () => {
+  assert.equal(
+    discordInteractionSenderThreadId([
+      {
+        type: "client/turn/requested",
+        data: { senderThreadId: "discord-root", source: "tell" },
+      },
+      {
+        type: "client/turn/requested",
+        data: { senderThreadId: "older-root", source: "spawn" },
+      },
+    ]),
+    "discord-root",
+  );
+  assert.equal(
+    discordInteractionSenderThreadId([
+      { type: "client/turn/requested", data: { senderThreadId: null } },
+      { type: "client/turn/requested", data: { senderThreadId: "worker" } },
+    ]),
+    "worker",
+  );
+  assert.equal(
+    discordInteractionSenderThreadId([
+      { type: "turn/started", data: { senderThreadId: "not-a-request" } },
+      null,
+      { type: "client/turn/requested", data: { senderThreadId: "  " } },
+    ]),
+    undefined,
+  );
 });
 
 test("Discord approval component ids round-trip and reject foreign input", () => {

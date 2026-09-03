@@ -5,6 +5,7 @@ import type { BbPluginApi } from "@bb/plugin-sdk";
 import {
   ActiveThreadWatcher,
   detachUnavailableSession,
+  discordInteractionSenderThreadId,
   discordQuestionControl,
   discordSessionName,
   InteractionAnnouncementGuard,
@@ -912,6 +913,22 @@ export default async function plugin(bb: BbPluginApi) {
     return route ? getMapByBbThread(route.owner_bb_thread_id) : undefined;
   };
 
+  const persistInteractionRoute = (
+    bbThreadId: string,
+    ownerBbThreadId: string,
+  ): void => {
+    if (bbThreadId === ownerBbThreadId) return;
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO discord_interaction_routes
+        (bb_thread_id, owner_bb_thread_id, created_at, last_activity_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(bb_thread_id) DO UPDATE SET
+         owner_bb_thread_id = excluded.owner_bb_thread_id,
+         last_activity_at = excluded.last_activity_at`,
+    ).run(bbThreadId, ownerBbThreadId, now, now);
+  };
+
   const ensureInteractionRoute = (thread: {
     id: string;
     parentThreadId: string | null;
@@ -924,18 +941,45 @@ export default async function plugin(bb: BbPluginApi) {
     if (!ownerBbThreadId) return undefined;
     const map = getMapByBbThread(ownerBbThreadId);
     if (!map) return undefined;
-    if (thread.id !== ownerBbThreadId) {
-      const now = Date.now();
-      db.prepare(
-        `INSERT INTO discord_interaction_routes
-          (bb_thread_id, owner_bb_thread_id, created_at, last_activity_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(bb_thread_id) DO UPDATE SET
-           owner_bb_thread_id = excluded.owner_bb_thread_id,
-           last_activity_at = excluded.last_activity_at`,
-      ).run(thread.id, ownerBbThreadId, now, now);
-    }
+    persistInteractionRoute(thread.id, ownerBbThreadId);
     return map;
+  };
+
+  const ensureInteractionRouteFromSender = async (
+    thread: { id: string; parentThreadId: string | null },
+    visited = new Set<string>(),
+  ): Promise<ThreadMapRow | undefined> => {
+    const existing = ensureInteractionRoute(thread);
+    if (existing) return existing;
+    if (visited.has(thread.id) || visited.size >= 8) return undefined;
+    visited.add(thread.id);
+
+    try {
+      const events = await bb.sdk.threads.events.list({
+        threadId: thread.id,
+        types: ["client/turn/requested"],
+        order: "desc",
+        limit: "25",
+      });
+      const senderThreadId = discordInteractionSenderThreadId(events);
+      if (!senderThreadId || visited.has(senderThreadId)) return undefined;
+
+      let ownerMap = getInteractionMapByBbThread(senderThreadId);
+      if (!ownerMap) {
+        const senderThread = await bb.sdk.threads.get({
+          threadId: senderThreadId,
+        });
+        ownerMap = await ensureInteractionRouteFromSender(senderThread, visited);
+      }
+      if (!ownerMap) return undefined;
+      persistInteractionRoute(thread.id, ownerMap.bb_thread_id);
+      return ownerMap;
+    } catch (error) {
+      bb.log.warn(
+        `Could not infer Discord interaction route for ${thread.id}: ${errorMessage(error)}`,
+      );
+      return undefined;
+    }
   };
 
   const insertMap = (row: ThreadMapRow): void => {
@@ -1326,11 +1370,11 @@ export default async function plugin(bb: BbPluginApi) {
     void activeThreadWatcher.tick();
   };
 
-  const watchInteractionThread = (thread: {
+  const watchInteractionThread = async (thread: {
     id: string;
     parentThreadId: string | null;
-  }): void => {
-    const map = ensureInteractionRoute(thread);
+  }): Promise<void> => {
+    const map = await ensureInteractionRouteFromSender(thread);
     if (!map || !isActiveMappedGuild(map.guild_id, effectiveGuildId())) return;
     activeThreadWatcher.start(thread.id);
     void activeThreadWatcher.tick();
@@ -2040,13 +2084,14 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.events.on("thread.active", ({ thread }) => {
-    watchInteractionThread(thread);
+    void watchInteractionThread(thread);
   });
 
   bb.events.on("thread.idle", async ({ thread, lastAssistantText }) => {
     activeThreadWatcher.stop(thread.id);
     const interactionMap =
-      getInteractionMapByBbThread(thread.id) ?? ensureInteractionRoute(thread);
+      getInteractionMapByBbThread(thread.id) ??
+      (await ensureInteractionRouteFromSender(thread));
     if (
       !interactionMap ||
       !isActiveMappedGuild(interactionMap.guild_id, effectiveGuildId())
