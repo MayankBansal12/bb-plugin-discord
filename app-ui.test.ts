@@ -5,7 +5,6 @@ import test from "node:test";
 const app = readFileSync(new URL("./app.tsx", import.meta.url), "utf8");
 const css = readFileSync(new URL("./app.css", import.meta.url), "utf8");
 const select = readFileSync(new URL("./components/ui/select.tsx", import.meta.url), "utf8");
-const input = readFileSync(new URL("./components/ui/input.tsx", import.meta.url), "utf8");
 
 test("Discord uses one staged settings section instead of two config surfaces", () => {
   assert.equal([...app.matchAll(/app\.slots\.settingsSection\(/g)].length, 1);
@@ -60,13 +59,6 @@ test("routing choices are concise and fold the default into the machine list", (
   assert.match(app, /machine\.id !== defaultMachineId/);
   assert.match(app, /\(no checkout\)/);
   assert.doesNotMatch(app, /Automatic/);
-  // The list and the saved draft have to agree on which machine is the
-  // default, or the default machine is offered twice — once as the default
-  // entry and again by name — and a pin on it selects a hidden option.
-  assert.match(app, /resolveDefaultMachineId\(execution, draft\.defaultProjectId\)/);
-  assert.match(app, /resolveDefaultMachineId\(status\.execution, projectId\)/);
-  assert.match(app, /selectedMachineId === defaultMachineId \? "" : selectedMachineId/);
-  assert.doesNotMatch(app, /execution\.machine\.source === "default"/);
 });
 
 test("routing and model changes are staged for the single configuration save", () => {
@@ -79,18 +71,12 @@ test("routing and model changes are staged for the single configuration save", (
   assert.doesNotMatch(app, /Apply model|setExecutionSelection/);
 });
 
-test("every control fills its row at one width, and edits use the settings-scoped save bar", () => {
-  // The row control is either an @/components/ui control, which is already
-  // `h-9 w-full border-input`, or bb's model picker boxed to match it. A
-  // control that sizes to its own content makes each field a different width.
-  const rowControl = /flex h-9 (?:w-full )?items-center[^"]*rounded-md border border-input bg-background/g;
-  assert.equal([...app.matchAll(rowControl)].length, 2);
-  assert.match(app, /className="w-full justify-between"/);
-  assert.doesNotMatch(app, /className="max-w-full"/);
-  for (const control of [input, select]) {
-    assert.match(control, /h-9 [^"]*w-full|w-full [^"]*h-9|h-9 min-w-0 w-full/);
-    assert.match(control, /border border-input/);
-  }
+test("the model picker stays compact and every edit uses the settings-scoped save bar", () => {
+  assert.match(app, /className="max-w-full"/);
+  assert.doesNotMatch(app, /className="w-full justify-between"/);
+  assert.match(select, /width: "var\(--radix-select-trigger-width\)"/);
+  assert.match(select, /Viewport className="w-full p-1"/);
+  assert.doesNotMatch(select, /min-w-\[8rem\]/);
   assert.match(app, /className="discord-unsaved-bar"/);
   assert.match(app, />Reset<\/Button>/);
   assert.match(app, /checked=\{draft\.destructiveActions\}/);

@@ -78,13 +78,6 @@ const executionSchema = z.object({
       status: z.enum(["connected", "disconnected"]),
     }).strict(),
   ),
-  /**
-   * Where bb runs a project that names no default checkout — the personal
-   * project never names one. Without this the panel cannot tell that its
-   * "default machine" entry and a machine already on the list are the same
-   * machine, and offers both.
-   */
-  primaryHostId: z.string().nullable(),
   /** Models the selected (or default) machine can actually serve right now. */
   models: z.array(
     z.object({

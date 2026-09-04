@@ -401,8 +401,6 @@ export default async function plugin(bb: BbPluginApi) {
     projectError: string | null;
     machines: MachineInfo[] | null;
     machine: MachineInfo | null;
-    /** bb's own fallback machine, used when the project names no default. */
-    primaryHostId: string | null;
     catalog: MachineCatalog | null;
     defaults: ProjectExecutionDefaults | null;
   }
@@ -425,20 +423,6 @@ export default async function plugin(bb: BbPluginApi) {
       }));
     } catch (error) {
       bb.log.warn(`Could not list bb machines: ${errorMessage(error)}`);
-      return null;
-    }
-  };
-
-  /**
-   * The personal project has no checkout, so it names no default machine —
-   * bb falls back to the primary host. The panel needs that id to name its
-   * automatic option instead of listing the same machine twice.
-   */
-  const readPrimaryHostId = async (): Promise<string | null> => {
-    try {
-      return (await bb.sdk.system.config()).primaryHostId;
-    } catch (error) {
-      bb.log.warn(`Could not read the primary bb machine: ${errorMessage(error)}`);
       return null;
     }
   };
@@ -540,10 +524,9 @@ export default async function plugin(bb: BbPluginApi) {
     values: RuntimeValues,
   ): Promise<ExecutionContext> => {
     const selection = readExecutionSelection(values);
-    const [{ project, projects, error: projectError }, machines, primaryHostId] = await Promise.all([
+    const [{ project, projects, error: projectError }, machines] = await Promise.all([
       loadProject(selection.projectId),
       listMachines(),
-      readPrimaryHostId(),
     ]);
     const effectiveHostId = selection.hostId ?? project?.defaultHostId ?? null;
     const machine =
@@ -569,7 +552,7 @@ export default async function plugin(bb: BbPluginApi) {
       effectiveHostId,
       selection.providerId ?? defaults?.providerId,
     );
-    return { project, projects, projectError, machines, machine, primaryHostId, catalog, defaults };
+    return { project, projects, projectError, machines, machine, catalog, defaults };
   };
 
   const executionContext = async (
@@ -686,7 +669,6 @@ export default async function plugin(bb: BbPluginApi) {
         name: machine.name,
         status: machine.status,
       })),
-      primaryHostId: context.primaryHostId,
       models: catalogModelOptions(context, selection.providerId),
       catalogUnavailable: context.catalog === null,
     };

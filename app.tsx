@@ -21,7 +21,6 @@ import {
   DISCORD_DEVELOPER_LINKS,
   pairingPanelView,
   pairingSignalReason,
-  resolveDefaultMachineId,
 } from "./pairing-ui.js";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -391,14 +390,14 @@ interface ConfigDraft {
 function draftFrom(status: DiscordPairingStatus): ConfigDraft {
   const { configuration } = status;
   const projectId = status.execution.project.source === "setting" ? status.execution.project.value ?? "" : "";
+  const activeProject = projectId
+    ? status.execution.projects.find((project) => project.id === projectId)
+    : status.execution.projects.find((project) => project.kind === "personal");
   const selectedMachineId = status.execution.machine.source === "setting" ? status.execution.machine.value ?? "" : "";
-  const defaultMachineId = resolveDefaultMachineId(status.execution, projectId);
   const modelValue = pickerValueFromExecution(status.execution);
   return {
     defaultProjectId: projectId,
-    // A pin on the machine that is already the default is the default, and has
-    // to read as one — the list only renders that machine as its default entry.
-    machineHostId: selectedMachineId === defaultMachineId ? "" : selectedMachineId,
+    machineHostId: selectedMachineId === activeProject?.defaultHostId ? "" : selectedMachineId,
     modelValue,
     modelPinned: status.execution.model.source === "setting" && modelValue !== null,
     permissionMode: configuration.permissionMode.value as ConfigDraft["permissionMode"],
@@ -446,7 +445,11 @@ function RoutingFields({
   const activeProject = draft.defaultProjectId
     ? execution.projects.find((project) => project.id === draft.defaultProjectId) ?? null
     : execution.projects.find((project) => project.kind === "personal") ?? null;
-  const defaultMachineId = resolveDefaultMachineId(execution, draft.defaultProjectId);
+  const defaultMachineId = activeProject?.defaultHostId ?? (
+    !draft.defaultProjectId && execution.machine.source === "default"
+      ? execution.machine.value
+      : null
+  );
   const defaultMachine = defaultMachineId
     ? execution.machines.find((machine) => machine.id === defaultMachineId) ?? null
     : null;
@@ -503,27 +506,21 @@ function RoutingFields({
       </Field>
       <Field label="Model" description="Uses the project default unless changed.">
         {(_id) => (
-          <div className="min-w-0 space-y-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             {draft.modelValue ? (
-              // bb owns the picker's internals, and its trigger is a compact
-              // borderless chip. Boxing it to the same height and border as the
-              // selects above keeps this row from reading as a different kind
-              // of control sitting at a different width.
-              <div className="flex h-9 w-full items-center rounded-md border border-input bg-background px-2 shadow-sm">
-                <ProviderModelPicker
-                  value={draft.modelValue}
-                  routing={pickerHostId ? { kind: "host", hostId: pickerHostId } : undefined}
-                  disabled={disabled}
-                  align="end"
-                  className="w-full justify-between"
-                  onChange={(value) => {
-                    edit({ modelValue: value, modelPinned: true });
-                  }}
-                />
-              </div>
+              <ProviderModelPicker
+                value={draft.modelValue}
+                routing={pickerHostId ? { kind: "host", hostId: pickerHostId } : undefined}
+                disabled={disabled}
+                align="end"
+                className="max-w-full"
+                onChange={(value) => {
+                  edit({ modelValue: value, modelPinned: true });
+                }}
+              />
             ) : <Notice destructive>The model list is unavailable.</Notice>}
             {draft.modelPinned ? (
-              <Button variant="ghost" size="sm" className="px-0" disabled={disabled} onClick={() => edit({ modelPinned: false })}>Use default model</Button>
+              <Button variant="ghost" size="sm" disabled={disabled} onClick={() => edit({ modelPinned: false })}>Use default model</Button>
             ) : null}
           </div>
         )}
@@ -763,7 +760,7 @@ function ConnectedPanel({ state }: { state: DiscordStatusState }) {
           </Field>
           <Field label="Destructive actions" description={draft.serverAccess === "full" ? "Allow channel deletion and member moderation." : "Choose Full server access first."}>
             {(id) => (
-              <div className="flex h-9 items-center justify-between rounded-md border border-input bg-background px-3 shadow-sm">
+              <div className="flex min-h-9 items-center justify-between rounded-md border border-border px-3">
                 <span className="text-sm text-muted-foreground">{draft.destructiveActions && draft.serverAccess === "full" ? "Allowed" : "Not allowed"}</span>
                 <Switch id={id} checked={draft.destructiveActions} disabled={busy || (draft.serverAccess !== "full" && !draft.destructiveActions)} onCheckedChange={(checked) => edit("destructiveActions", checked)} />
               </div>
