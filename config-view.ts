@@ -16,7 +16,7 @@ export const UNKNOWN_BOT_NAME = "the bot";
 
 /**
  * Discord tags are `name` (new usernames) or `name#1234` (legacy). Discord
- * copy should read as the bot the operator invited, not as "BB".
+ * copy should read as the bot the operator invited, not as "bb".
  */
 export function botDisplayName(botTag: string | null | undefined): string {
   const trimmed = botTag?.trim();
@@ -159,6 +159,7 @@ export function accessLevelLabel(level: DiscordAccessLevel): string {
 }
 
 export const PERMISSION_MODE_LABELS: Record<string, string> = {
+  "machine-default": "Machine default",
   auto: "Auto (ask before risky actions)",
   "accept-edits": "Accept edits",
   full: "Full (no approval prompts)",
@@ -166,5 +167,8 @@ export const PERMISSION_MODE_LABELS: Record<string, string> = {
 };
 
 export function permissionModeLabel(mode: string | undefined): string {
-  return PERMISSION_MODE_LABELS[mode ?? "auto"] ?? PERMISSION_MODE_LABELS.auto!;
+  return (
+    PERMISSION_MODE_LABELS[mode ?? "machine-default"] ??
+    PERMISSION_MODE_LABELS["machine-default"]!
+  );
 }

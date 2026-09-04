@@ -1,4 +1,4 @@
-// BB uses each statement's array index as its migration id. Keep this v0.0.4
+// bb uses each statement's array index as its migration id. Keep this v0.0.4
 // prefix byte-for-byte and append every new migration after it so upgrades
 // cannot reinterpret an already-applied id as a different statement.
 export const legacyMigrations = [
@@ -78,4 +78,24 @@ export const interactionActionMigrations = [
     ON discord_interaction_actions(bb_thread_id, interaction_id)`,
 ] as const;
 
-export const migrations = [...legacyMigrations, ...interactionActionMigrations];
+export const interactionRouteMigrations = [
+  `CREATE TABLE IF NOT EXISTS discord_interaction_routes (
+    bb_thread_id TEXT PRIMARY KEY,
+    owner_bb_thread_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_activity_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS discord_interaction_routes_owner_idx
+    ON discord_interaction_routes(owner_bb_thread_id, last_activity_at)`,
+] as const;
+
+export const interactionMessageMigrations = [
+  `ALTER TABLE discord_interaction_actions ADD COLUMN discord_message_id TEXT`,
+] as const;
+
+export const migrations = [
+  ...legacyMigrations,
+  ...interactionActionMigrations,
+  ...interactionRouteMigrations,
+  ...interactionMessageMigrations,
+];

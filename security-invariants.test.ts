@@ -18,3 +18,54 @@ test("logs and informational status cannot disclose the live pairing code", () =
   assert.doesNotMatch(statusCommand, /pairingInstructions|formatPairingCode|pendingCode/);
   assert.match(statusCommand, /one-time code is hidden from status/);
 });
+
+test("Discord-backed agent replies have one outbound delivery path", () => {
+  const configuration = serverSource.match(
+    /bb\.agents\.configure\(\(context\) => \{([\s\S]*?)\n  \}\);/,
+  )?.[1];
+  const registration = serverSource.match(
+    /registerDiscordTools\(bb, \{([\s\S]*?)\n  \}\);/,
+  )?.[1];
+
+  assert.ok(configuration, "agent configuration should be present");
+  assert.ok(registration, "Discord tool registration should be present");
+  assert.match(configuration, /isDiscordAgentConversation/);
+  assert.match(configuration, /context\.origin\.pluginId/);
+  assert.match(
+    configuration,
+    /getInteractionMapByBbThread\(context\.thread\.id\) !== undefined/,
+  );
+  assert.match(configuration, /allowSendMessage: !isDiscordConversation/);
+  assert.match(registration, /getInteractionMapByBbThread\(bbThreadId\) !== undefined/);
+});
+
+test("normal assistant output can target only its mapped Discord thread", () => {
+  const threadDelivery = serverSource.match(
+    /const postToThreadChannel = async \(([\s\S]*?)\n  \};/,
+  )?.[1];
+  const idleHandler = serverSource.match(
+    /bb\.events\.on\("thread\.idle",([\s\S]*?)\n  \}\);\n\n  bb\.events\.on\("thread\.failed"/,
+  )?.[1];
+
+  assert.ok(threadDelivery, "mapped-thread delivery should be present");
+  assert.ok(idleHandler, "thread.idle handler should be present");
+  assert.match(threadDelivery, /map\.discord_thread_id/);
+  assert.doesNotMatch(threadDelivery, /discord_parent_channel_id|homeChannelId/);
+  assert.match(idleHandler, /postToThreadChannel/);
+  assert.doesNotMatch(idleHandler, /sendToDiscord|postToHome|discord_parent_channel_id/);
+  assert.doesNotMatch(idleHandler, /MAX_REPLY_CHARS|truncate\(trimmed/);
+});
+
+test("Discord interaction actions are bound to their original message", () => {
+  const approvalHandler = serverSource.match(
+    /const handleApprovalAction = async \(([\s\S]*?)\n  const handleQuestionAction/,
+  )?.[1];
+  const questionHandler = serverSource.match(
+    /const handleQuestionAction = async \(([\s\S]*?)\n  const handlePairingMessage/,
+  )?.[1];
+
+  assert.ok(approvalHandler, "approval action handler should be present");
+  assert.ok(questionHandler, "question action handler should be present");
+  assert.match(approvalHandler, /stored\.discord_message_id !== action\.messageId/);
+  assert.match(questionHandler, /stored\.discord_message_id !== action\.messageId/);
+});

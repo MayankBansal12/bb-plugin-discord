@@ -5,21 +5,84 @@ import {
   detachUnavailableSession,
   describePendingInteraction,
   discordApprovalActionId,
+  discordInteractionSenderThreadId,
+  discordQuestionActionId,
+  discordQuestionControl,
   discordSessionName,
   isAllowedSpawnLocation,
+  isDiscordAgentConversation,
   normalizeOptionalDiscordSnowflake,
   prepareDiscordSession,
+  rehydrateActiveThreadWatches,
+  resolveDiscordInteractionOwner,
   parseDiscordIds,
   pendingInteractionPrompt,
   pendingInteractionReplyInstructions,
   parseDiscordApprovalActionId,
+  parseDiscordQuestionActionId,
   InteractionAnnouncementGuard,
   routeDiscordMessage,
   routeCreatesSession,
   resolveInteractionReply,
   resolveApprovalDecision,
+  resolveQuestionSelection,
   shouldAlertHomeForFailure,
 } from "./bridge.js";
+
+test("Discord agent conversations are recognized before and after mapping", () => {
+  assert.equal(isDiscordAgentConversation("discord", "discord", false), true);
+  assert.equal(isDiscordAgentConversation("discord", null, true), true);
+  assert.equal(isDiscordAgentConversation("discord", "side-chat", false), false);
+  assert.equal(isDiscordAgentConversation("discord", null, false), false);
+});
+
+test("child and nested worker interactions inherit their Discord session owner", () => {
+  const direct = new Set(["discord-root"]);
+  const routes = new Map([["child", "discord-root"]]);
+  const resolve = (id: string, parentThreadId: string | null) =>
+    resolveDiscordInteractionOwner(
+      { id, parentThreadId },
+      (threadId) => direct.has(threadId),
+      (threadId) => routes.get(threadId),
+    );
+
+  assert.equal(resolve("discord-root", null), "discord-root");
+  assert.equal(resolve("child", "discord-root"), "discord-root");
+  assert.equal(resolve("grandchild", "child"), "discord-root");
+  assert.equal(resolve("unrelated", null), undefined);
+  assert.equal(resolve("unrelated-child", "unrelated"), undefined);
+});
+
+test("delegated interaction routing finds the latest recorded sender thread", () => {
+  assert.equal(
+    discordInteractionSenderThreadId([
+      {
+        type: "client/turn/requested",
+        data: { senderThreadId: "discord-root", source: "tell" },
+      },
+      {
+        type: "client/turn/requested",
+        data: { senderThreadId: "older-root", source: "spawn" },
+      },
+    ]),
+    "discord-root",
+  );
+  assert.equal(
+    discordInteractionSenderThreadId([
+      { type: "client/turn/requested", data: { senderThreadId: null } },
+      { type: "client/turn/requested", data: { senderThreadId: "worker" } },
+    ]),
+    "worker",
+  );
+  assert.equal(
+    discordInteractionSenderThreadId([
+      { type: "turn/started", data: { senderThreadId: "not-a-request" } },
+      null,
+      { type: "client/turn/requested", data: { senderThreadId: "  " } },
+    ]),
+    undefined,
+  );
+});
 
 test("Discord approval component ids round-trip and reject foreign input", () => {
   const token = "0123456789abcdef01234567";
@@ -37,6 +100,20 @@ test("Discord approval component ids round-trip and reject foreign input", () =>
   assert.throws(
     () => discordApprovalActionId("raw-BB-interaction-id", "allow_once"),
     /Invalid Discord approval action token/,
+  );
+});
+
+test("Discord question component ids round-trip and reject foreign input", () => {
+  const token = "0123456789abcdef01234567";
+  assert.equal(discordQuestionActionId(token), `bb-question:v1:${token}`);
+  assert.deepEqual(parseDiscordQuestionActionId(`bb-question:v1:${token}`), {
+    token,
+  });
+  assert.equal(parseDiscordQuestionActionId(`bb-question:v2:${token}`), null);
+  assert.equal(parseDiscordQuestionActionId("another-plugin:select"), null);
+  assert.throws(
+    () => discordQuestionActionId("raw-BB-interaction-id"),
+    /Invalid Discord question action token/,
   );
 });
 import {
@@ -99,6 +176,26 @@ test("the active-thread watcher pauses for gateway teardown and disposes cleanly
   watcher.dispose();
   assert.equal(timers.size, 0);
   assert.equal(watcher.targetCount, 0);
+});
+
+test("restart rehydration watches active threads and pending idle interactions", async () => {
+  const watched: string[] = [];
+  const errors: string[] = [];
+  await rehydrateActiveThreadWatches({
+    threadIds: ["active", "starting", "pending-idle", "idle", "missing"],
+    inspect: async (threadId) => {
+      if (threadId === "missing") throw new Error("not found");
+      return {
+        status: threadId === "pending-idle" ? "idle" : threadId,
+        pendingInteractionCount: threadId === "pending-idle" ? 1 : 0,
+      };
+    },
+    watch: (threadId) => watched.push(threadId),
+    onError: (threadId) => errors.push(threadId),
+  });
+
+  assert.deepEqual(watched, ["active", "starting", "pending-idle", "missing"]);
+  assert.deepEqual(errors, ["missing"]);
 });
 
 test("watcher ticks do not overlap or fan out beyond active targets", async () => {
@@ -442,7 +539,7 @@ test("session names are derived from compacted request text", () => {
 });
 
 test("session names have a useful fallback and Discord's 100-character cap", () => {
-  assert.equal(discordSessionName(" \n "), "BB conversation");
+  assert.equal(discordSessionName(" \n "), "bb conversation");
   assert.equal(discordSessionName("x".repeat(120)).length, 100);
   assert.match(discordSessionName("x".repeat(120)), /…$/);
 });
@@ -569,6 +666,82 @@ test("single free-text question becomes a user_answer resolution", () => {
       },
     },
   });
+});
+
+test("one option question is eligible for a native Discord select menu", () => {
+  const interaction = {
+    id: "i-choice",
+    status: "pending",
+    payload: {
+      kind: "user_question" as const,
+      questions: [
+        {
+          id: "flow",
+          prompt: "Which approval flow should I exercise next?",
+          allowFreeText: false,
+          multiSelect: false,
+          options: [
+            { label: "In-workspace edit approval", value: "workspace" },
+            { label: "Stop testing here", value: "stop" },
+          ],
+        },
+      ],
+    },
+  };
+
+  assert.deepEqual(discordQuestionControl(interaction), {
+    questionId: "flow",
+    prompt: "Which approval flow should I exercise next?",
+    allowFreeText: false,
+    multiSelect: false,
+    options: interaction.payload.questions[0]!.options,
+  });
+  assert.deepEqual(resolveQuestionSelection(interaction, [1]), {
+    kind: "resolve",
+    resolution: {
+      kind: "user_answer",
+      answers: { flow: { selected: ["stop"] } },
+    },
+  });
+  assert.equal(resolveQuestionSelection(interaction, [2]).kind, "error");
+  assert.equal(
+    pendingInteractionPrompt(interaction, undefined, true),
+    "Which approval flow should I exercise next?\n_Choose an option below._",
+  );
+});
+
+test("native Discord question controls support multiple selections", () => {
+  const interaction = {
+    id: "i-multi",
+    status: "pending",
+    payload: {
+      kind: "user_question" as const,
+      questions: [
+        {
+          id: "checks",
+          prompt: "Which checks should run?",
+          allowFreeText: true,
+          multiSelect: true,
+          options: [
+            { label: "Tests", value: "tests" },
+            { label: "Build", value: "build" },
+          ],
+        },
+      ],
+    },
+  };
+
+  assert.deepEqual(resolveQuestionSelection(interaction, [1, 0, 1]), {
+    kind: "resolve",
+    resolution: {
+      kind: "user_answer",
+      answers: { checks: { selected: ["build", "tests"] } },
+    },
+  });
+  assert.match(
+    pendingInteractionPrompt(interaction, undefined, true),
+    /Choose one or more options below, or reply here with another answer/,
+  );
 });
 
 test("multiple questions require numbered lines", () => {

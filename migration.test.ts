@@ -3,6 +3,8 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   interactionActionMigrations,
+  interactionMessageMigrations,
+  interactionRouteMigrations,
   legacyMigrations,
   migrations,
 } from "./migrations.js";
@@ -33,6 +35,15 @@ function assertCurrentSchema(db: DatabaseSync): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get("discord_interaction_actions") as { name: string } | undefined;
   assert.equal(actionTable?.name, "discord_interaction_actions");
+  const actionColumns = db
+    .prepare("PRAGMA table_info(discord_interaction_actions)")
+    .all() as Array<{ name: string }>;
+  assert.ok(actionColumns.some(({ name }) => name === "discord_message_id"));
+
+  const routeTable = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get("discord_interaction_routes") as { name: string } | undefined;
+  assert.equal(routeTable?.name, "discord_interaction_routes");
 }
 
 test("a fresh database applies the current migration history", () => {
@@ -59,7 +70,7 @@ test("the current history repairs the failed v0.0.4 to v0.0.5 upgrade", () => {
   );
 
   // The repaired history keeps ids 0-10 unchanged and adds the new table at
-  // ids 11-12, so it can resume without deleting or rewriting user data.
+  // ids 11 onward, so it can resume without deleting or rewriting user data.
   applyFrom(db, migrations, legacyMigrations.length);
   assertCurrentSchema(db);
   db.close();
@@ -77,4 +88,23 @@ test("a database first created by v0.0.5 remains compatible", () => {
   applyFrom(db, migrations, brokenV005Migrations.length);
   assertCurrentSchema(db);
   db.close();
+});
+
+test("interaction routes are appended after the already-shipped action migrations", () => {
+  assert.equal(
+    migrations[legacyMigrations.length],
+    interactionActionMigrations[0],
+  );
+  assert.equal(
+    migrations[legacyMigrations.length + interactionActionMigrations.length],
+    interactionRouteMigrations[0],
+  );
+  assert.equal(
+    migrations[
+      legacyMigrations.length +
+        interactionActionMigrations.length +
+        interactionRouteMigrations.length
+    ],
+    interactionMessageMigrations[0],
+  );
 });

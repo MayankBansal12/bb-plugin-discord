@@ -131,12 +131,15 @@ test("the invite URL is derived from the bot token", () => {
   );
 });
 
-test("Discord threads default to sandboxed automatic review", () => {
-  assert.equal(resolveSpawnPermissionMode(undefined, "full"), "auto");
+test("Discord threads default to the selected machine with a full fallback", () => {
+  assert.equal(resolveSpawnPermissionMode(undefined, "accept-edits", "auto"), "auto");
+  assert.equal(resolveSpawnPermissionMode("machine-default", "accept-edits", "full"), "full");
+  assert.equal(resolveSpawnPermissionMode("machine-default", "accept-edits"), "full");
   assert.equal(resolveSpawnPermissionMode("accept-edits", "full"), "accept-edits");
   assert.equal(resolveSpawnPermissionMode("project-default", "full"), "full");
   assert.equal(resolveSpawnPermissionMode("auto", "accept-edits"), "auto");
-  assert.equal(resolveSpawnPermissionMode("nonsense", "accept-edits"), "auto");
+  assert.equal(resolveSpawnPermissionMode("nonsense", "accept-edits", "auto"), "auto");
+  assert.equal(resolveSpawnPermissionMode("nonsense", "accept-edits"), "full");
 });
 
 test("Discord failures become actionable operator messages", () => {

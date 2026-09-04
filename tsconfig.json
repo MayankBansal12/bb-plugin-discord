@@ -26,25 +26,10 @@
     "skipLibCheck": true
   },
   "include": [
-    "server.ts",
-    "contract.ts",
-    "app.tsx",
-    "app-ui.test.ts",
+    "*.ts",
+    "*.tsx",
     "components/**/*.tsx",
     "lib/**/*.ts",
-    "pairing-ui.ts",
-    "pairing-ui.test.ts",
-    "pairing-status.ts",
-    "pairing-status.test.ts",
-    "security-invariants.test.ts",
-    "discord.ts",
-    "discord.test.ts",
-    "bridge.ts",
-    "pairing.ts",
-    "tools.ts",
-    "bridge.test.ts",
-    "pairing.test.ts",
-    "tools.test.ts",
-    "types"
+    "types/**/*.d.ts"
   ]
 }

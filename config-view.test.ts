@@ -97,7 +97,8 @@ test("destructive actions stay inert without full access, and report why", () =>
   });
 });
 
-test("the permission mode label defaults to auto", () => {
-  assert.match(permissionModeLabel(undefined), /^Auto/);
+test("the permission mode label defaults to the selected machine", () => {
+  assert.equal(permissionModeLabel(undefined), "Machine default");
+  assert.equal(permissionModeLabel("machine-default"), "Machine default");
   assert.match(permissionModeLabel("full"), /^Full/);
 });

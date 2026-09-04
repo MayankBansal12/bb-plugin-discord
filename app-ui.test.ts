@@ -43,6 +43,10 @@ test("controls come from reusable UI components and theme tokens", () => {
   }
   assert.doesNotMatch(app, /#[0-9a-f]{3,8}\b|\brgb\(|\boklch\(/i);
   assert.doesNotMatch(css, /#[0-9a-f]{3,8}\b|\brgb\(|\boklch\(/i);
+  assert.doesNotMatch(
+    app,
+    /\b(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}\b/,
+  );
 });
 
 test("routing choices are concise and fold the default into the machine list", () => {
@@ -63,7 +67,7 @@ test("routing and model changes are staged for the single configuration save", (
   assert.match(picker, /edit\(\{ modelValue: value, modelPinned: true \}\)/);
   assert.match(app, /state\.rpc\.call\("setConfiguration"/);
   assert.match(app, /providerId: draft\.modelPinned/);
-  assert.match(app, /"Save Changes"/);
+  assert.match(app, /"Save changes"/);
   assert.doesNotMatch(app, /Apply model|setExecutionSelection/);
 });
 

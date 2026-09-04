@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DiscordClient, type DiscordClientOptions } from "./discord.js";
+import {
+  chunkForDiscord,
+  DiscordClient,
+  resolvedInteractionContent,
+  type DiscordClientOptions,
+} from "./discord.js";
 
 function makeClient(
   log: DiscordClientOptions["log"] = {
@@ -73,6 +78,62 @@ test("approval requests render only BB-offered Discord buttons", async () => {
   );
 });
 
+test("option questions render as a Discord select menu", async () => {
+  const client = makeClient();
+  let sent: unknown;
+  const channel = {
+    guildId: "guild-1",
+    archived: false,
+    isDMBased: () => false,
+    isThread: () => true,
+    send: async (payload: unknown) => {
+      sent = payload;
+      return { id: "message-1" };
+    },
+  };
+  const internal = client as unknown as {
+    client: { channels: { fetch: () => Promise<unknown> } };
+  };
+  internal.client.channels.fetch = async () => channel;
+
+  await client.sendQuestionRequest("guild-1", "channel-1", "Which flow?", {
+    token: "0123456789abcdef01234567",
+    multiSelect: false,
+    options: [
+      { label: "In-workspace edit approval" },
+      { label: "Stop testing here", description: "Finish without another check" },
+    ],
+  });
+
+  const payload = sent as {
+    content: string;
+    components: Array<{
+      components: Array<{
+        data: {
+          custom_id: string;
+          max_values: number;
+        };
+        toJSON: () => {
+          options: Array<{ label: string; value: string; description?: string }>;
+        };
+      }>;
+    }>;
+  };
+  const select = payload.components[0]!.components[0]!.data;
+  assert.equal(payload.content, "Which flow?");
+  assert.equal(select.custom_id, "bb-question:v1:0123456789abcdef01234567");
+  assert.equal(select.max_values, 1);
+  assert.deepEqual(payload.components[0]!.components[0]!.toJSON().options, [
+    { label: "In-workspace edit approval", value: "0", emoji: undefined },
+    {
+      label: "Stop testing here",
+      value: "1",
+      description: "Finish without another check",
+      emoji: undefined,
+    },
+  ]);
+});
+
 test("authorized approval clicks resolve and disable the original buttons", async () => {
   const actions: unknown[] = [];
   const client = makeClient(undefined, {
@@ -129,6 +190,138 @@ test("authorized approval clicks resolve and disable the original buttons", asyn
   });
 });
 
+test("authorized question selections resolve and close the select menu", async () => {
+  const actions: unknown[] = [];
+  const client = makeClient(undefined, {
+    isAuthorized: (guildId, userId) =>
+      guildId === "guild-1" && userId === "user-1",
+    onQuestionAction: async (action) => {
+      actions.push(action);
+      return { outcome: "resolved", statusText: "✅ Answered by person." };
+    },
+  });
+  let edited: unknown;
+  const interaction = {
+    guildId: "guild-1",
+    channelId: "channel-1",
+    values: ["2"],
+    user: { id: "user-1", tag: "person" },
+    message: { id: "message-1", content: "Which flow?" },
+    deferUpdate: async () => {},
+    editReply: async (payload: unknown) => {
+      edited = payload;
+    },
+    followUp: async () => {},
+    reply: async () => {},
+  };
+  const invoke = client as unknown as {
+    handleQuestionInteraction: (
+      interaction: unknown,
+      action: { token: string },
+    ) => Promise<void>;
+  };
+
+  await invoke.handleQuestionInteraction(interaction, {
+    token: "0123456789abcdef01234567",
+  });
+
+  assert.deepEqual(actions, [
+    {
+      token: "0123456789abcdef01234567",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      messageId: "message-1",
+      authorId: "user-1",
+      authorTag: "person",
+      selectedIndices: [2],
+    },
+  ]);
+  assert.deepEqual(edited, {
+    content: "Which flow?\n\n✅ Answered by person.",
+    components: [],
+  });
+});
+
+test("long messages are split without losing text or Unicode", async () => {
+  const client = makeClient();
+  const sent: string[] = [];
+  const channel = {
+    guildId: "guild-1",
+    archived: false,
+    isDMBased: () => false,
+    isThread: () => true,
+    send: async (payload: string) => {
+      sent.push(payload);
+      return { id: `message-${sent.length}` };
+    },
+  };
+  const internal = client as unknown as {
+    client: { channels: { fetch: () => Promise<unknown> } };
+  };
+  internal.client.channels.fetch = async () => channel;
+  const text = `${"first line with words ".repeat(110)}\n${"🔥".repeat(1200)}\n${"last line ".repeat(120)}`;
+
+  await client.sendMessage("guild-1", "channel-1", text);
+
+  assert.ok(sent.length > 1);
+  assert.ok(sent.every((chunk) => chunk.length <= 1900));
+  assert.equal(sent.join(""), text);
+  assert.deepEqual(sent, chunkForDiscord(text));
+  for (let index = 0; index < sent.length - 1; index += 1) {
+    const end = sent[index]!.charCodeAt(sent[index]!.length - 1);
+    const start = sent[index + 1]!.charCodeAt(0);
+    assert.equal(end >= 0xd800 && end <= 0xdbff && start >= 0xdc00 && start <= 0xdfff, false);
+  }
+});
+
+test("resolved interaction messages preserve status within Discord's limit", () => {
+  const status =
+    "✅ Allowed for this bb session. Similar requests may proceed without another prompt.";
+  const content = resolvedInteractionContent("🔥".repeat(1200), status);
+
+  assert.ok(content.length <= 2000);
+  assert.ok(content.endsWith(status));
+  assert.equal(content.includes("\ud83d…"), false);
+});
+
+test("interaction controls can be closed after a typed or in-bb answer", async () => {
+  const client = makeClient();
+  let edited: unknown;
+  const channel = {
+    guildId: "guild-1",
+    archived: false,
+    isDMBased: () => false,
+    isThread: () => true,
+    messages: {
+      fetch: async (messageId: string) => {
+        assert.equal(messageId, "message-1");
+        return {
+          content: "Approval requested",
+          edit: async (payload: unknown) => {
+            edited = payload;
+          },
+        };
+      },
+    },
+  };
+  const internal = client as unknown as {
+    client: { channels: { fetch: () => Promise<unknown> } };
+  };
+  internal.client.channels.fetch = async () => channel;
+
+  await client.closeInteractionRequest(
+    "guild-1",
+    "channel-1",
+    "message-1",
+    "✅ Approved by person.",
+  );
+
+  assert.deepEqual(edited, {
+    content: "Approval requested\n\n✅ Approved by person.",
+    components: [],
+  });
+});
+
 test("unauthorized approval clicks are ephemeral and never reach BB", async () => {
   let handled = false;
   let reply: unknown;
@@ -162,7 +355,7 @@ test("unauthorized approval clicks are ephemeral and never reach BB", async () =
 
   assert.equal(handled, false);
   assert.deepEqual(reply, {
-    content: "You are not authorized to approve this BB request.",
+    content: "You are not authorized to approve this bb request.",
     ephemeral: true,
   });
 });

@@ -1,15 +1,31 @@
 {
   "name": "bb-plugin-discord",
-  "version": "0.0.5",
-  "description": "Drive bb through your Discord bot, start threads, monitor status, set reminders and receive lifecycle updates.",
+  "version": "0.1.1",
+  "description": "Run bb agent threads from Discord, answer approvals, and manage your server with permission-gated tools.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MayankBansal12/bb-plugin-discord.git"
+  },
+  "homepage": "https://github.com/MayankBansal12/bb-plugin-discord#readme",
+  "bugs": {
+    "url": "https://github.com/MayankBansal12/bb-plugin-discord/issues"
+  },
+  "keywords": [
+    "bb",
+    "bb-plugin",
+    "discord",
+    "agent",
+    "plugin"
+  ],
   "engines": {
+    "node": ">=22.19.0",
     "bb": ">=0.40.0",
     "bbPluginSdk": ">=0.4.21"
   },
   "bb": {
     "name": "Discord",
-    "description": "Drive bb through your Discord bot, start threads, monitor status, set reminders and receive lifecycle updates.",
+    "description": "Run bb agent threads from Discord, answer approvals, and manage your server with permission-gated tools.",
     "branding": {
       "icon": "./icons/discord.svg"
     },
@@ -24,6 +40,7 @@
     "@radix-ui/react-select": "^2.3.7",
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.0",
+    "bb-app": "0.40.0",
     "react": "^19.2.0",
     "tsx": "^4.20.5",
     "typescript": "^5.7.0"
@@ -31,7 +48,7 @@
   "scripts": {
     "build": "bb plugin build",
     "check": "npm run typecheck && npm test && bb plugin types --check && bb plugin build",
-    "test": "tsx --test app-ui.test.ts bridge.test.ts config-view.test.ts discord.test.ts execution.test.ts migration.test.ts pairing.test.ts pairing-status.test.ts pairing-ui.test.ts security-invariants.test.ts settings.test.ts tools.test.ts",
+    "test": "tsx --test app-ui.test.ts bridge.test.ts config-view.test.ts copy.test.ts discord.test.ts execution.test.ts migration.test.ts pairing.test.ts pairing-status.test.ts pairing-ui.test.ts security-invariants.test.ts settings.test.ts tools.test.ts",
     "typecheck": "tsc --noEmit"
   }
 }

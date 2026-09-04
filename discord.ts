@@ -7,20 +7,25 @@ import {
   Events,
   GatewayIntentBits,
   Partials,
+  StringSelectMenuBuilder,
   type Channel,
   type ButtonInteraction,
   type Guild,
   type GuildBasedChannel,
   type Message,
   type MessageCreateOptions,
+  type StringSelectMenuInteraction,
   type TextChannel,
   type ThreadChannel,
 } from "discord.js";
 import {
   discordApprovalActionId,
+  discordQuestionActionId,
   parseDiscordApprovalActionId,
+  parseDiscordQuestionActionId,
   type ApprovalDecision,
   type DiscordApprovalAction,
+  type DiscordQuestionAction,
 } from "./bridge.js";
 import { classifyDiscordError } from "./pairing.js";
 
@@ -54,6 +59,9 @@ export interface DiscordClientOptions {
   onApprovalAction?: (
     action: DiscordInboundApprovalAction,
   ) => DiscordApprovalActionResult | Promise<DiscordApprovalActionResult>;
+  onQuestionAction?: (
+    action: DiscordInboundQuestionAction,
+  ) => DiscordQuestionActionResult | Promise<DiscordQuestionActionResult>;
   onReady: (botTag: string) => void | Promise<void>;
   onConnectionStateChange?: (ready: boolean) => void;
   /** Fired at most once when message content arrives empty (intent is off). */
@@ -73,14 +81,31 @@ export interface DiscordInboundApprovalAction extends DiscordApprovalAction {
   authorTag: string;
 }
 
+export interface DiscordInboundQuestionAction extends DiscordQuestionAction {
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  authorId: string;
+  authorTag: string;
+  selectedIndices: number[];
+}
+
 export type DiscordApprovalActionResult =
   | { outcome: "resolved"; statusText: string }
   | { outcome: "stale"; statusText: string }
   | { outcome: "retry"; errorText: string };
 
+export type DiscordQuestionActionResult = DiscordApprovalActionResult;
+
 export interface DiscordApprovalRequest {
   token: string;
   decisions: ApprovalDecision[];
+}
+
+export interface DiscordQuestionRequest {
+  token: string;
+  multiSelect: boolean;
+  options: Array<{ description?: string; label: string }>;
 }
 
 export interface DiscordChannelSummary {
@@ -185,7 +210,7 @@ export class DiscordChannelBoundaryError extends Error {
   override readonly name = "DiscordChannelBoundaryError";
 }
 
-/** Permanent channel failures should detach a live Discord/BB session. */
+/** Permanent channel failures should detach a live Discord/bb session. */
 export function isUnavailableDiscordChannelError(error: unknown): boolean {
   const kind = classifyDiscordError(error).kind;
   return (
@@ -228,14 +253,25 @@ export class DiscordClient {
     });
 
     this.client.on(Events.InteractionCreate, (interaction) => {
-      if (!interaction.isButton()) return;
-      const action = parseDiscordApprovalActionId(interaction.customId);
-      if (!action) return;
-      void this.handleApprovalInteraction(interaction, action).catch((error) => {
-        opts.log.error(
-          `Discord approval handler failed: ${errorMessage(error)}`,
-        );
-      });
+      if (interaction.isButton()) {
+        const action = parseDiscordApprovalActionId(interaction.customId);
+        if (!action) return;
+        void this.handleApprovalInteraction(interaction, action).catch((error) => {
+          opts.log.error(
+            `Discord approval handler failed: ${errorMessage(error)}`,
+          );
+        });
+        return;
+      }
+      if (interaction.isStringSelectMenu()) {
+        const action = parseDiscordQuestionActionId(interaction.customId);
+        if (!action) return;
+        void this.handleQuestionInteraction(interaction, action).catch((error) => {
+          opts.log.error(
+            `Discord question handler failed: ${errorMessage(error)}`,
+          );
+        });
+      }
     });
 
     this.client.on(Events.Error, (error) => {
@@ -313,6 +349,65 @@ export class DiscordClient {
       { content: text, components: row.components.length > 0 ? [row] : [] },
     );
     return message.id;
+  }
+
+  async sendQuestionRequest(
+    guildId: string,
+    channelId: string,
+    text: string,
+    request: DiscordQuestionRequest,
+  ): Promise<string> {
+    const channel = await this.fetchGuildChannel(guildId, channelId, true);
+    if (!channel || !("send" in channel)) {
+      throw new Error(`Channel ${channelId} is not text-sendable`);
+    }
+    if (request.options.length === 0 || request.options.length > 25) {
+      throw new Error("Discord question controls require 1–25 options.");
+    }
+    const select = new StringSelectMenuBuilder()
+      .setCustomId(discordQuestionActionId(request.token))
+      .setPlaceholder(request.multiSelect ? "Choose one or more options…" : "Choose an option…")
+      .setMinValues(1)
+      .setMaxValues(request.multiSelect ? request.options.length : 1)
+      .addOptions(
+        request.options.map((option, index) => ({
+          label: truncateComponentText(option.label.trim() || `Option ${index + 1}`, 100),
+          value: String(index),
+          ...(option.description?.trim()
+            ? { description: truncateComponentText(option.description.trim(), 100) }
+            : {}),
+        })),
+      );
+    const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+    const message = await this.sendChunkWithRetry(
+      channel as TextChannel | ThreadChannel,
+      channelId,
+      { content: text, components: [row] },
+    );
+    return message.id;
+  }
+
+  async closeInteractionRequest(
+    guildId: string,
+    channelId: string,
+    messageId: string,
+    statusText: string,
+  ): Promise<void> {
+    const channel = await this.fetchGuildChannel(guildId, channelId, true);
+    if (!channel || !("messages" in channel)) {
+      throw new Error(`Channel ${channelId} does not contain messages`);
+    }
+    try {
+      const message = await (
+        channel as TextChannel | ThreadChannel
+      ).messages.fetch(messageId);
+      await message.edit({
+        content: resolvedInteractionContent(message.content, statusText),
+        components: [],
+      });
+    } catch (error) {
+      throw toFriendlyError(error);
+    }
   }
 
   async sendTyping(guildId: string, channelId: string): Promise<void> {
@@ -671,14 +766,14 @@ export class DiscordClient {
       !this.opts.isAuthorized(guildId, interaction.user.id)
     ) {
       await interaction.reply({
-        content: "You are not authorized to approve this BB request.",
+        content: "You are not authorized to approve this bb request.",
         ephemeral: true,
       });
       return;
     }
     if (!this.opts.onApprovalAction) {
       await interaction.reply({
-        content: "This BB approval bridge is not available right now.",
+        content: "This bb approval bridge is not available right now.",
         ephemeral: true,
       });
       return;
@@ -701,7 +796,7 @@ export class DiscordClient {
       );
       await interaction.followUp({
         content:
-          "BB could not apply that decision yet. The approval is still open; please try again.",
+          "bb could not apply that decision yet. The approval is still open; please try again.",
         ephemeral: true,
       });
       return;
@@ -712,7 +807,69 @@ export class DiscordClient {
     }
     const original = interaction.message.content.trim();
     await interaction.editReply({
-      content: `${original}${original ? "\n\n" : ""}${result.statusText}`,
+      content: resolvedInteractionContent(original, result.statusText),
+      components: [],
+    });
+  }
+
+  private async handleQuestionInteraction(
+    interaction: StringSelectMenuInteraction,
+    action: DiscordQuestionAction,
+  ): Promise<void> {
+    const guildId = interaction.guildId;
+    const channelId = interaction.channelId;
+    if (
+      !guildId ||
+      !channelId ||
+      !this.opts.isAuthorized(guildId, interaction.user.id)
+    ) {
+      await interaction.reply({
+        content: "You are not authorized to answer this bb question.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (!this.opts.onQuestionAction) {
+      await interaction.reply({
+        content: "This bb question bridge is not available right now.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const selectedIndices = interaction.values.map(Number);
+    if (selectedIndices.some((index) => !Number.isInteger(index) || index < 0)) {
+      await interaction.reply({ content: "That option is invalid.", ephemeral: true });
+      return;
+    }
+
+    await interaction.deferUpdate();
+    let result: DiscordQuestionActionResult;
+    try {
+      result = await this.opts.onQuestionAction({
+        ...action,
+        guildId,
+        channelId,
+        messageId: interaction.message.id,
+        authorId: interaction.user.id,
+        authorTag: interaction.user.tag,
+        selectedIndices,
+      });
+    } catch (error) {
+      this.opts.log.warn(`Could not apply Discord answer: ${errorMessage(error)}`);
+      await interaction.followUp({
+        content: "bb could not apply that answer yet. The question is still open; please try again.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (result.outcome === "retry") {
+      await interaction.followUp({ content: result.errorText, ephemeral: true });
+      return;
+    }
+    const original = interaction.message.content.trim();
+    await interaction.editReply({
+      content: resolvedInteractionContent(original, result.statusText),
       components: [],
     });
   }
@@ -731,7 +888,7 @@ export class DiscordClient {
         guildChannel.archived
       ) {
         try {
-          await guildChannel.setArchived(false, "Resume linked BB conversation");
+          await guildChannel.setArchived(false, "Resume linked bb conversation");
         } catch (error) {
           throw toFriendlyError(error);
         }
@@ -806,19 +963,66 @@ function approvalButton(token: string, decision: ApprovalDecision): ButtonBuilde
   return button.setLabel("Deny").setStyle(ButtonStyle.Danger);
 }
 
+/** Losslessly split text below Discord's 2,000-character message limit. */
 export function chunkForDiscord(text: string): string[] {
   const max = 1900;
   if (text.length <= max) return [text];
   const chunks: string[] = [];
-  let rest = text;
-  while (rest.length > max) {
-    let split = rest.lastIndexOf("\n", max);
-    if (split < max / 2) split = max;
-    chunks.push(rest.slice(0, split));
-    rest = rest.slice(split).trimStart();
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(start + max, text.length);
+    if (end < text.length) {
+      const minimumPreferredSplit = start + Math.floor(max / 2);
+      const newline = text.lastIndexOf("\n", end - 1);
+      const whitespace = text.lastIndexOf(" ", end - 1);
+      const preferred = Math.max(newline, whitespace);
+      if (preferred >= minimumPreferredSplit) end = preferred + 1;
+      // Never divide one UTF-16 surrogate pair between Discord messages.
+      if (
+        isHighSurrogate(text.charCodeAt(end - 1)) &&
+        isLowSurrogate(text.charCodeAt(end))
+      ) {
+        end -= 1;
+      }
+    }
+    chunks.push(text.slice(start, end));
+    start = end;
   }
-  if (rest) chunks.push(rest);
   return chunks;
+}
+
+function truncateComponentText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let end = max - 1;
+  if (
+    isHighSurrogate(text.charCodeAt(end - 1)) &&
+    isLowSurrogate(text.charCodeAt(end))
+  ) {
+    end -= 1;
+  }
+  return `${text.slice(0, end)}…`;
+}
+
+/** Keep the terminal status visible without exceeding Discord's hard limit. */
+export function resolvedInteractionContent(
+  original: string,
+  statusText: string,
+): string {
+  const status = statusText.trim();
+  if (!original.trim()) return truncateComponentText(status, 2000);
+  const separator = "\n\n";
+  const available = 2000 - separator.length - status.length;
+  if (available < 2) return truncateComponentText(status, 2000);
+  const subject = truncateComponentText(original.trim(), available);
+  return `${subject}${separator}${status}`;
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
 }
 
 function delay(ms: number): Promise<void> {

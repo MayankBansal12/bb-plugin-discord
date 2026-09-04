@@ -1,4 +1,4 @@
-// Agent tools that let a BB thread operate the paired Discord server.
+// Agent tools that let a bb thread operate the paired Discord server.
 //
 // Access is graduated on purpose:
 //   "messages" (default) — read and write messages and threads only.
@@ -16,7 +16,14 @@ export interface DiscordToolDeps {
   getGuildId: () => string | null;
   getAccessLevel: () => DiscordAccessLevel;
   allowsDestructive: () => boolean;
+  isDiscordConversation: (bbThreadId: string) => boolean;
 }
+
+export const DISCORD_BRIDGE_AGENT_INSTRUCTIONS =
+  "This conversation is already linked to a dedicated Discord thread. Reply normally; your final assistant message is delivered there automatically. Do not claim that you posted a separate Discord message. BB approvals and option-based AskUserQuestion interactions are rendered in Discord as buttons or select menus; do not tell the user Discord lacks those controls. When spawning or delegating a BB thread whose approvals or questions should return here, make this conversation its parent (with the bb CLI, pass --parent-self). If the user asks to post in another channel, explain that cross-channel posting must be started from a regular bb thread.";
+
+export const DISCORD_BRIDGE_SEND_BLOCKED_MESSAGE =
+  "This bb conversation already replies through its linked Discord thread. Reply normally instead of calling discord_send_message. To post in another channel, start the request from a regular bb thread.";
 
 /** Always available once the plugin is paired. */
 export const MESSAGE_TOOL_NAMES = [
@@ -46,9 +53,12 @@ export function availableToolNames(
   level: DiscordAccessLevel,
   allowsDestructive: boolean,
   paired: boolean,
+  options: { allowSendMessage?: boolean } = {},
 ): string[] {
   if (!paired) return [];
-  const names: string[] = [...MESSAGE_TOOL_NAMES];
+  const names: string[] = MESSAGE_TOOL_NAMES.filter(
+    (name) => options.allowSendMessage !== false || name !== "discord_send_message",
+  );
   if (level === "full") {
     names.push(...MANAGEMENT_TOOL_NAMES);
     if (allowsDestructive) names.push(...DESTRUCTIVE_TOOL_NAMES);
@@ -57,7 +67,7 @@ export function availableToolNames(
 }
 
 export function discordAuditReason(threadId: string): string {
-  return `Requested through BB's Discord plugin by thread ${threadId}`;
+  return `Requested through bb's Discord plugin by thread ${threadId}`;
 }
 
 type ToolResult = string | { content: [{ type: "text"; text: string }]; isError: true };
@@ -76,17 +86,17 @@ function ready(deps: DiscordToolDeps, requireFull: boolean): Ready | ToolResult 
   const guildId = deps.getGuildId();
   if (!client || !client.isReady()) {
     return toolError(
-      "Discord is not connected. Check the connection panel in BB → Settings → Plugins → Discord.",
+      "Discord is not connected. Check the connection panel in Settings → Extensions → Plugins → Discord in bb.",
     );
   }
   if (!guildId) {
     return toolError(
-      "Discord is not paired yet. Complete pairing in BB → Settings → Plugins → Discord.",
+      "Discord is not paired yet. Complete pairing in Settings → Extensions → Plugins → Discord in bb.",
     );
   }
   if (requireFull && deps.getAccessLevel() !== "full") {
     return toolError(
-      "This action needs full server access. Set Discord server access to \"full\" in Settings → Plugins → Discord.",
+      "This action needs full server access. Set Discord access to \"Full server access\" in Settings → Extensions → Plugins → Discord in bb.",
     );
   }
   return { client, guildId };
@@ -175,6 +185,8 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
     name: "discord_send_message",
     description:
       "Post a message to a channel or thread in the paired Discord server. Long messages are split automatically.",
+    instructions:
+      "Use discord_send_message only when the user explicitly asks to post a separate message in Discord. Never use it to mirror your own reply; Discord-backed conversations deliver the final assistant message automatically.",
     parameters: z.object({
       channelId: z.string().describe("Channel or thread id to post into."),
       content: z.string().min(1).max(8000).describe("Message text to send."),
@@ -182,7 +194,13 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
     presentation: {
       label: { pending: "Sending Discord message", completed: "Sent Discord message" },
     },
-    async execute({ channelId, content }) {
+    async execute({ channelId, content }, ctx) {
+      // Provider sessions retain their advertised tool set until restart. Keep
+      // the runtime boundary as well as the configure-time omission so a live
+      // session created before an update still cannot bypass automatic relay.
+      if (deps.isDiscordConversation(ctx.threadId)) {
+        return toolError(DISCORD_BRIDGE_SEND_BLOCKED_MESSAGE);
+      }
       const state = ready(deps, false);
       if (!isReady(state)) return state;
       return guarded(async () => {
@@ -196,6 +214,8 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
     name: "discord_create_thread",
     description:
       "Create a thread under a Discord text channel, optionally seeding it with a first message.",
+    instructions:
+      "Use discord_create_thread only when the user explicitly asks to create a separate Discord thread. Never create a replacement for the current Discord-backed conversation, which already owns a dedicated thread.",
     parameters: z.object({
       channelId: z.string().describe("Parent text channel id."),
       name: z.string().min(1).max(100).describe("Thread name."),
@@ -364,7 +384,7 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
       if (!isReady(state)) return state;
       if (!deps.allowsDestructive()) {
         return toolError(
-          "Destructive Discord actions are disabled. Enable \"Allow destructive server actions\" in Settings → Plugins → Discord first.",
+          "Destructive Discord actions are disabled. Enable \"Destructive actions\" in Settings → Extensions → Plugins → Discord in bb first.",
         );
       }
       return guarded(async () => {
@@ -407,7 +427,7 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
       if (!isReady(state)) return state;
       if (!deps.allowsDestructive()) {
         return toolError(
-          "Destructive Discord actions are disabled. Enable \"Allow destructive server actions\" in Settings → Plugins → Discord first.",
+          "Destructive Discord actions are disabled. Enable \"Destructive actions\" in Settings → Extensions → Plugins → Discord in bb first.",
         );
       }
       return guarded(async () => {

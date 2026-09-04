@@ -1,5 +1,5 @@
 // Source-level invariants for the staged settings architecture. The bot token
-// remains in BB's secret store; every non-secret preference lives in the
+// remains in bb's secret store; every non-secret preference lives in the
 // plugin-owned config row and is written through narrow RPC handlers.
 
 import assert from "node:assert/strict";
@@ -24,7 +24,7 @@ test("the host-rendered settings form asks for the bot token only", () => {
   assert.ok(block, "settings definition should be present");
   assert.match(block, /botToken:/);
   assert.match(block, /secret: true/);
-  assert.match(block, /label: "Discord Token"/);
+  assert.match(block, /label: "Discord bot token"/);
   for (const key of [
     "permissionMode",
     "serverAccess",
@@ -44,8 +44,12 @@ test("the host-rendered settings form asks for the bot token only", () => {
   }
 });
 
-test("durable configuration defaults to least privilege and automatic routing", () => {
-  assert.match(serverSource, /permissionMode: "auto"/);
+test("durable configuration follows the selected machine and keeps Discord access narrow", () => {
+  assert.match(serverSource, /permissionMode: "machine-default"/);
+  assert.match(
+    serverSource,
+    /context\.catalog\?\.permissionCeiling \?\? context\.machine\?\.maxPermissionMode/,
+  );
   assert.match(serverSource, /serverAccess: "messages"/);
   assert.match(serverSource, /allowDestructiveServerActions: false/);
   assert.match(migrationsSource, /CREATE TABLE IF NOT EXISTS discord_config/);
@@ -58,16 +62,21 @@ test("new migrations are appended after the frozen v0.0.4 migration prefix", () 
   const appendedBlock = migrationsSource.match(
     /export const interactionActionMigrations = \[([\s\S]*?)\n\] as const;/,
   )?.[1];
+  const routeBlock = migrationsSource.match(
+    /export const interactionRouteMigrations = \[([\s\S]*?)\n\] as const;/,
+  )?.[1];
 
   assert.ok(legacyBlock, "the legacy migration prefix should remain explicit");
   assert.ok(appendedBlock, "the appended migration list should be present");
+  assert.ok(routeBlock, "the interaction route migration list should be present");
   assert.match(legacyBlock, /ALTER TABLE discord_config ADD COLUMN reasoning_level TEXT/);
   assert.match(legacyBlock, /ALTER TABLE discord_config ADD COLUMN service_tier TEXT/);
   assert.doesNotMatch(legacyBlock, /discord_interaction_actions/);
   assert.match(appendedBlock, /CREATE TABLE IF NOT EXISTS discord_interaction_actions/);
+  assert.match(routeBlock, /CREATE TABLE IF NOT EXISTS discord_interaction_routes/);
   assert.match(
     migrationsSource,
-    /export const migrations = \[\.\.\.legacyMigrations, \.\.\.interactionActionMigrations\]/,
+    /\.\.\.legacyMigrations,[\s\S]*\.\.\.interactionActionMigrations,[\s\S]*\.\.\.interactionRouteMigrations/,
   );
 });
 
