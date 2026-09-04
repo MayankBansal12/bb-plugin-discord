@@ -81,3 +81,33 @@ export function pairingSignalReason(payload: unknown): string | null {
   const reason = (payload as { reason?: unknown }).reason;
   return typeof reason === "string" ? reason : null;
 }
+
+/**
+ * The machine a Discord request lands on when nothing is pinned: the selected
+ * project's default checkout, or bb's primary host when the project names none
+ * (the personal project never does).
+ *
+ * The panel folds this machine into its single "… (default)" entry and drops
+ * it from the rest of the list. Resolving it in one place is what keeps the
+ * same machine from being offered twice — once unnamed as the default, and
+ * again by name — and keeps a pinned machine that *is* the default collapsed
+ * onto that entry instead of selecting an option the list no longer renders.
+ */
+export function resolveDefaultMachineId(
+  execution: DiscordPairingStatus["execution"],
+  projectId: string,
+): string | null {
+  const project = projectId
+    ? execution.projects.find((entry) => entry.id === projectId) ?? null
+    : execution.projects.find((entry) => entry.kind === "personal") ?? null;
+  if (project?.defaultHostId) return project.defaultHostId;
+  const primary = execution.primaryHostId;
+  if (!primary) return null;
+  // A standard project only runs where it is checked out, so bb would not fall
+  // back to the primary host there; leave the entry unnamed rather than name a
+  // machine the project cannot use.
+  if (project?.kind === "standard" && !project.hostIds.includes(primary)) {
+    return null;
+  }
+  return primary;
+}

@@ -5,6 +5,7 @@ import {
   formatDuration,
   pairingPanelView,
   pairingSignalReason,
+  resolveDefaultMachineId,
 } from "./pairing-ui.js";
 import { configurationFixture, executionFixture } from "./test-support.js";
 
@@ -103,4 +104,59 @@ test("only structured realtime invalidations trigger a refresh", () => {
   assert.equal(pairingSignalReason({ reason: 42 }), null);
   assert.equal(pairingSignalReason("paired"), null);
   assert.equal(pairingSignalReason(null), null);
+});
+
+const PERSONAL: DiscordPairingStatus["execution"]["projects"][number] = {
+  id: "proj_personal",
+  name: "Personal",
+  kind: "personal",
+  hostIds: [],
+  defaultHostId: null,
+};
+
+test("the personal project's default machine is bb's primary host, not an unnamed fallback", () => {
+  const execution = executionFixture({
+    projects: [PERSONAL],
+    machines: [{ id: "host_primary", name: "afdasf", status: "connected" }],
+    primaryHostId: "host_primary",
+  });
+  // Naming it is what lets the panel drop "afdasf" from the rest of the list:
+  // the default entry and that row were the same machine.
+  assert.equal(resolveDefaultMachineId(execution, ""), "host_primary");
+});
+
+test("a project's own default checkout wins over the primary host", () => {
+  const execution = executionFixture({
+    projects: [
+      PERSONAL,
+      { id: "proj_1", name: "sage", kind: "standard", hostIds: ["host_other"], defaultHostId: "host_other" },
+    ],
+    primaryHostId: "host_primary",
+  });
+  assert.equal(resolveDefaultMachineId(execution, "proj_1"), "host_other");
+});
+
+test("a standard project never defaults to a machine it is not checked out on", () => {
+  const execution = executionFixture({
+    projects: [
+      PERSONAL,
+      { id: "proj_1", name: "sage", kind: "standard", hostIds: ["host_other"], defaultHostId: null },
+    ],
+    primaryHostId: "host_primary",
+  });
+  assert.equal(resolveDefaultMachineId(execution, "proj_1"), null);
+
+  const checkedOut = executionFixture({
+    projects: [
+      PERSONAL,
+      { id: "proj_1", name: "sage", kind: "standard", hostIds: ["host_primary"], defaultHostId: null },
+    ],
+    primaryHostId: "host_primary",
+  });
+  assert.equal(resolveDefaultMachineId(checkedOut, "proj_1"), "host_primary");
+});
+
+test("an unreadable primary host leaves the default entry unnamed instead of guessing", () => {
+  const execution = executionFixture({ projects: [PERSONAL], primaryHostId: null });
+  assert.equal(resolveDefaultMachineId(execution, ""), null);
 });

@@ -21,6 +21,7 @@ import {
   DISCORD_DEVELOPER_LINKS,
   pairingPanelView,
   pairingSignalReason,
+  resolveDefaultMachineId,
 } from "./pairing-ui.js";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -390,14 +391,14 @@ interface ConfigDraft {
 function draftFrom(status: DiscordPairingStatus): ConfigDraft {
   const { configuration } = status;
   const projectId = status.execution.project.source === "setting" ? status.execution.project.value ?? "" : "";
-  const activeProject = projectId
-    ? status.execution.projects.find((project) => project.id === projectId)
-    : status.execution.projects.find((project) => project.kind === "personal");
   const selectedMachineId = status.execution.machine.source === "setting" ? status.execution.machine.value ?? "" : "";
+  const defaultMachineId = resolveDefaultMachineId(status.execution, projectId);
   const modelValue = pickerValueFromExecution(status.execution);
   return {
     defaultProjectId: projectId,
-    machineHostId: selectedMachineId === activeProject?.defaultHostId ? "" : selectedMachineId,
+    // A pin on the machine that is already the default should use the single
+    // named default option instead of duplicating that machine in the list.
+    machineHostId: selectedMachineId === defaultMachineId ? "" : selectedMachineId,
     modelValue,
     modelPinned: status.execution.model.source === "setting" && modelValue !== null,
     permissionMode: configuration.permissionMode.value as ConfigDraft["permissionMode"],
@@ -445,11 +446,7 @@ function RoutingFields({
   const activeProject = draft.defaultProjectId
     ? execution.projects.find((project) => project.id === draft.defaultProjectId) ?? null
     : execution.projects.find((project) => project.kind === "personal") ?? null;
-  const defaultMachineId = activeProject?.defaultHostId ?? (
-    !draft.defaultProjectId && execution.machine.source === "default"
-      ? execution.machine.value
-      : null
-  );
+  const defaultMachineId = resolveDefaultMachineId(execution, draft.defaultProjectId);
   const defaultMachine = defaultMachineId
     ? execution.machines.find((machine) => machine.id === defaultMachineId) ?? null
     : null;
@@ -519,9 +516,6 @@ function RoutingFields({
                 }}
               />
             ) : <Notice destructive>The model list is unavailable.</Notice>}
-            {draft.modelPinned ? (
-              <Button variant="ghost" size="sm" disabled={disabled} onClick={() => edit({ modelPinned: false })}>Use default model</Button>
-            ) : null}
           </div>
         )}
       </Field>

@@ -59,6 +59,10 @@ test("routing choices are concise and fold the default into the machine list", (
   assert.match(app, /machine\.id !== defaultMachineId/);
   assert.match(app, /\(no checkout\)/);
   assert.doesNotMatch(app, /Automatic/);
+  assert.match(app, /resolveDefaultMachineId\(execution, draft\.defaultProjectId\)/);
+  assert.match(app, /resolveDefaultMachineId\(status\.execution, projectId\)/);
+  assert.match(app, /selectedMachineId === defaultMachineId \? "" : selectedMachineId/);
+  assert.doesNotMatch(app, /execution\.machine\.source === "default"/);
 });
 
 test("routing and model changes are staged for the single configuration save", () => {
@@ -74,6 +78,7 @@ test("routing and model changes are staged for the single configuration save", (
 test("the model picker stays compact and every edit uses the settings-scoped save bar", () => {
   assert.match(app, /className="max-w-full"/);
   assert.doesNotMatch(app, /className="w-full justify-between"/);
+  assert.doesNotMatch(app, /Use default model/);
   assert.match(select, /width: "var\(--radix-select-trigger-width\)"/);
   assert.match(select, /Viewport className="w-full p-1"/);
   assert.doesNotMatch(select, /min-w-\[8rem\]/);
