@@ -56,6 +56,7 @@ export function executionFixture(
     issues: [],
     projects: [],
     machines: [],
+    primaryHostId: null,
     models: [],
     catalogUnavailable: false,
     ...overrides,
