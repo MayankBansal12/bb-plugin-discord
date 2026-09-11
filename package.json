@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-discord",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Run bb agent threads from Discord, answer approvals, and manage your server with permission-gated tools.",
   "type": "module",
   "repository": {
@@ -41,6 +41,7 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.0",
     "bb-app": "0.40.0",
+    "jiti": "2.7.0",
     "react": "^19.2.0",
     "tsx": "^4.20.5",
     "typescript": "^5.7.0"
@@ -48,7 +49,7 @@
   "scripts": {
     "build": "bb plugin build",
     "check": "npm run typecheck && npm test && bb plugin types --check && bb plugin build",
-    "test": "tsx --test app-ui.test.ts bridge.test.ts config-view.test.ts copy.test.ts discord.test.ts execution.test.ts migration.test.ts pairing.test.ts pairing-status.test.ts pairing-ui.test.ts security-invariants.test.ts settings.test.ts tools.test.ts",
+    "test": "tsx --test app-ui.test.ts bridge.test.ts config-view.test.ts copy.test.ts discord.test.ts delivery.test.ts server.test.ts execution.test.ts migration.test.ts pairing.test.ts pairing-status.test.ts pairing-ui.test.ts security-invariants.test.ts settings.test.ts tools.test.ts",
     "typecheck": "tsc --noEmit"
   }
 }

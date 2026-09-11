@@ -7,6 +7,7 @@ import {
   interactionRouteMigrations,
   legacyMigrations,
   migrations,
+  replyOutboxMigrations,
 } from "./migrations.js";
 
 function applyFrom(
@@ -44,6 +45,10 @@ function assertCurrentSchema(db: DatabaseSync): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get("discord_interaction_routes") as { name: string } | undefined;
   assert.equal(routeTable?.name, "discord_interaction_routes");
+  const outbox = db.prepare("PRAGMA table_info(discord_reply_outbox)").all();
+  for (const column of ["idle_at", "output_id", "chunks_json", "next_chunk", "delivered_at"]) {
+    assert.ok(outbox.some((row) => row.name === column));
+  }
 }
 
 test("a fresh database applies the current migration history", () => {
@@ -107,4 +112,24 @@ test("interaction routes are appended after the already-shipped action migration
     ],
     interactionMessageMigrations[0],
   );
+});
+
+
+test("v0.1.1 upgrades append the outbox without changing pairing or conversation data", () => {
+  const db = new DatabaseSync(":memory:");
+  const v011 = [...legacyMigrations, ...interactionActionMigrations,
+    ...interactionRouteMigrations, ...interactionMessageMigrations];
+  assert.deepEqual(migrations.slice(0, v011.length), v011);
+  assert.deepEqual(migrations.slice(v011.length), [...replyOutboxMigrations]);
+  applyFrom(db, v011);
+  db.prepare("INSERT INTO discord_pairing (id,guild_id,channel_id,user_id,paired_at) VALUES (1,?,?,?,?)")
+    .run("guild-1", "home-1", "user-1", 123);
+  db.prepare(`INSERT INTO discord_threads
+    (discord_channel_id,discord_thread_id,guild_id,bb_thread_id,created_at,last_activity_at)
+    VALUES (?,?,?,?,?,?)`).run("session-1", "session-1", "guild-1", "bb-1", 123, 123);
+  applyFrom(db, migrations, v011.length);
+  assertCurrentSchema(db);
+  assert.equal(db.prepare("SELECT guild_id FROM discord_pairing").get()!.guild_id, "guild-1");
+  assert.equal(db.prepare("SELECT bb_thread_id FROM discord_threads").get()!.bb_thread_id, "bb-1");
+  db.close();
 });

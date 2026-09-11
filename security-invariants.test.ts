@@ -51,7 +51,8 @@ test("normal assistant output can target only its mapped Discord thread", () => 
   assert.ok(idleHandler, "thread.idle handler should be present");
   assert.match(threadDelivery, /map\.discord_thread_id/);
   assert.doesNotMatch(threadDelivery, /discord_parent_channel_id|homeChannelId/);
-  assert.match(idleHandler, /postToThreadChannel/);
+  assert.match(idleHandler, /replyOutbox\.enqueue/);
+  assert.match(idleHandler, /channelId: directMap\.discord_thread_id/);
   assert.doesNotMatch(idleHandler, /sendToDiscord|postToHome|discord_parent_channel_id/);
   assert.doesNotMatch(idleHandler, /MAX_REPLY_CHARS|truncate\(trimmed/);
 });

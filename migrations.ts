@@ -93,9 +93,29 @@ export const interactionMessageMigrations = [
   `ALTER TABLE discord_interaction_actions ADD COLUMN discord_message_id TEXT`,
 ] as const;
 
+export const replyOutboxMigrations = [
+  `CREATE TABLE IF NOT EXISTS discord_reply_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bb_thread_id TEXT NOT NULL,
+    idle_at INTEGER NOT NULL,
+    guild_id TEXT NOT NULL,
+    discord_channel_id TEXT NOT NULL,
+    output_id TEXT,
+    chunks_json TEXT NOT NULL,
+    next_chunk INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    delivered_at INTEGER,
+    UNIQUE(bb_thread_id, idle_at),
+    UNIQUE(bb_thread_id, output_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS discord_reply_outbox_pending_idx
+    ON discord_reply_outbox(delivered_at, id)`,
+] as const;
+
 export const migrations = [
   ...legacyMigrations,
   ...interactionActionMigrations,
   ...interactionRouteMigrations,
   ...interactionMessageMigrations,
+  ...replyOutboxMigrations,
 ];

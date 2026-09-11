@@ -54,6 +54,7 @@ import {
   DISCORD_BRIDGE_AGENT_INSTRUCTIONS,
   registerDiscordTools,
 } from "./tools.js";
+import { ReplyOutbox, resolveReplyOutputId } from "./delivery.js";
 import { migrations } from "./migrations.js";
 import {
   discordRpcContract,
@@ -1052,25 +1053,6 @@ export default async function plugin(bb: BbPluginApi) {
     );
   };
 
-  const isReplyPosted = (bbThreadId: string, replyHash: string): boolean =>
-    db
-      .prepare(
-        "SELECT 1 FROM discord_posted_replies WHERE bb_thread_id = ? AND reply_hash = ?",
-      )
-      .get(bbThreadId, replyHash) !== undefined;
-
-  const markReplyPosted = (bbThreadId: string, replyHash: string): void => {
-    const replaceLast = db.transaction(() => {
-      db.prepare("DELETE FROM discord_posted_replies WHERE bb_thread_id = ?").run(
-        bbThreadId,
-      );
-      db.prepare(
-        "INSERT INTO discord_posted_replies (bb_thread_id, reply_hash, posted_at) VALUES (?, ?, ?)",
-      ).run(bbThreadId, replyHash, Date.now());
-    });
-    replaceLast();
-  };
-
   const isInteractionPosted = (
     bbThreadId: string,
     interactionId: string,
@@ -1180,6 +1162,7 @@ export default async function plugin(bb: BbPluginApi) {
       db.prepare("DELETE FROM discord_posted_replies WHERE bb_thread_id = ?").run(
         bbThreadId,
       );
+      db.prepare("DELETE FROM discord_reply_outbox WHERE bb_thread_id = ?").run(bbThreadId);
       db.prepare(
         "DELETE FROM discord_posted_interactions WHERE bb_thread_id = ?",
       ).run(bbThreadId);
@@ -1234,6 +1217,33 @@ export default async function plugin(bb: BbPluginApi) {
       ? sendToDiscord(map.guild_id, map.discord_thread_id, text)
       : false;
   };
+
+  const replyOutbox = new ReplyOutbox({
+    db,
+    isConnected: () => client?.isReady() === true,
+    isAuthorized: ({ bbThreadId, guildId, channelId }) => {
+      const map = getMapByBbThread(bbThreadId);
+      return Boolean(map && isActiveMappedGuild(guildId, effectiveGuildId()) &&
+        map.guild_id === guildId && map.discord_thread_id === channelId);
+    },
+    resolveOutputId: (reply, signal) => resolveReplyOutputId(reply, (beforeSeq) =>
+      bb.sdk.threads.events.list({
+        threadId: reply.bbThreadId,
+        types: ["item/completed", "system/manager/user_message"],
+        order: "desc",
+        limit: "100",
+        signal,
+        ...(beforeSeq ? { beforeSeq } : {}),
+      }), signal,
+    ),
+    sendChunk: async ({ guildId, channelId }, text, nonce) => {
+      if (!client?.isReady()) throw new Error("Discord is reconnecting.");
+      await client.sendReplyChunk(guildId, channelId, text, nonce);
+    },
+    onError: (threadId, error) => {
+      bb.log.warn(`Discord reply for ${threadId} remains queued: ${errorMessage(error)}`);
+    },
+  });
 
   const homeChannelId = (): string | null =>
     cached.homeChannelId?.trim() || getPairing()?.channel_id || null;
@@ -2232,12 +2242,15 @@ export default async function plugin(bb: BbPluginApi) {
 
     const directMap = getMapByBbThread(thread.id);
     if (directMap && lastAssistantText?.trim()) {
-      const trimmed = lastAssistantText.trim();
-      const replyHash = hashString(trimmed);
-      if (!isReplyPosted(thread.id, replyHash)) {
-        const posted = await postToThreadChannel(thread.id, trimmed);
-        if (posted) markReplyPosted(thread.id, replyHash);
-      }
+      // Capture before the first delivery await, even while Discord is down.
+      replyOutbox.enqueue({
+        bbThreadId: thread.id,
+        guildId: directMap.guild_id,
+        channelId: directMap.discord_thread_id,
+        idleAt: thread.updatedAt,
+        text: lastAssistantText.trim(),
+      });
+      await replyOutbox.flush();
     }
 
     // Belt and braces. The watcher is the primary announcement path because a
@@ -2293,6 +2306,8 @@ export default async function plugin(bb: BbPluginApi) {
       removeInteractionThreadState(thread.id);
       return;
     }
+    // Revoke delivery before the notice can yield to a retry or reconnect.
+    removeThreadState(thread.id);
     if (isActiveMappedGuild(map.guild_id, effectiveGuildId())) {
       await sendToDiscord(
         map.guild_id,
@@ -2302,7 +2317,6 @@ export default async function plugin(bb: BbPluginApi) {
           : "🗑️ The linked bb thread was deleted. Mention me in this channel to start a new conversation.",
       );
     }
-    removeThreadState(thread.id);
   });
 
   // ---------------------------------------------------------------------
@@ -2485,6 +2499,9 @@ export default async function plugin(bb: BbPluginApi) {
     signal: AbortSignal,
   ): Promise<void> => {
     setGatewayState("connecting", null, "gateway-connecting");
+    const gatewayStopped = new AbortController();
+    const gatewaySignal = AbortSignal.any([signal, gatewayStopped.signal]);
+    let fatalError: Error | null = null;
     const created = new DiscordClient({
       token,
       isAuthorized,
@@ -2502,6 +2519,10 @@ export default async function plugin(bb: BbPluginApi) {
           announcePairing();
         }
       },
+      onFatalError: (error) => {
+        fatalError = error;
+        gatewayStopped.abort();
+      },
       onConnectionStateChange: (ready) => {
         setGatewayState(
           ready ? "connected" : "connecting",
@@ -2510,6 +2531,7 @@ export default async function plugin(bb: BbPluginApi) {
         );
         if (ready) {
           activeThreadWatcher.resume();
+          void replyOutbox.flush();
           void rehydrateActiveThreads().catch((error) => {
             bb.log.warn(
               `Could not restore Discord active-thread watches: ${errorMessage(error)}`,
@@ -2535,8 +2557,12 @@ export default async function plugin(bb: BbPluginApi) {
     client = created;
     try {
       await created.login();
-      await waitForWake(signal);
+      // A terminal close can occur before this wait starts; an aborted signal
+      // remembers it. A token change during login also must not be lost.
+      if (cached.botToken === token) await waitForWake(gatewaySignal);
+      if (fatalError) throw fatalError;
     } finally {
+      gatewayStopped.abort();
       activeThreadWatcher.pause();
       if (client === created) client = null;
       botTag = null;
@@ -2590,9 +2616,25 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  bb.background.service("discord-replies", {
+    async start(signal) {
+      const stop = () => replyOutbox.stop();
+      signal.addEventListener("abort", stop, { once: true });
+      try {
+        while (!signal.aborted) {
+          await replyOutbox.flush();
+          await waitForWake(signal, ACTIVE_THREAD_WATCH_INTERVAL_MS);
+        }
+      } finally {
+        signal.removeEventListener("abort", stop);
+      }
+    },
+  });
+
   bb.background.schedule("cleanup", "0 4 * * *", async () => {
     const cutoff = Date.now() - RETENTION_MS;
     db.prepare("DELETE FROM discord_seen_messages WHERE seen_at < ?").run(cutoff);
+    db.prepare("DELETE FROM discord_reply_outbox WHERE created_at < ?").run(cutoff);
     db.prepare("DELETE FROM discord_posted_replies WHERE posted_at < ?").run(cutoff);
     db.prepare("DELETE FROM discord_posted_interactions WHERE posted_at < ?").run(
       cutoff,
@@ -2608,22 +2650,15 @@ export default async function plugin(bb: BbPluginApi) {
   bb.onDispose(async () => {
     wakeAll();
     activeThreadWatcher.dispose();
+    const repliesStopped = replyOutbox.dispose();
     if (client) {
       await client.destroy();
       client = null;
     }
+    await repliesStopped;
   });
 
   bb.log.info("Discord plugin loaded");
-}
-
-function hashString(input: string): string {
-  let hash = 0;
-  for (let index = 0; index < input.length; index += 1) {
-    hash = (hash << 5) - hash + input.charCodeAt(index);
-    hash |= 0;
-  }
-  return String(hash);
 }
 
 function truncate(text: string, max: number): string {

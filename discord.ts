@@ -64,6 +64,8 @@ export interface DiscordClientOptions {
   ) => DiscordQuestionActionResult | Promise<DiscordQuestionActionResult>;
   onReady: (botTag: string) => void | Promise<void>;
   onConnectionStateChange?: (ready: boolean) => void;
+  /** Terminal gateway failures after login must reach the supervisor. */
+  onFatalError?: (error: Error) => void;
   /** Fired at most once when message content arrives empty (intent is off). */
   onSuspectedMissingContentIntent: () => void;
   log: {
@@ -225,6 +227,9 @@ export class DiscordClient {
   private readonly opts: DiscordClientOptions;
   private ready = false;
   private reportedMissingContentIntent = false;
+  private initialized = false;
+  private destroyed = false;
+  private readonly reconnectingShards = new Set<number>();
 
   constructor(opts: DiscordClientOptions) {
     this.opts = opts;
@@ -235,11 +240,13 @@ export class DiscordClient {
         GatewayIntentBits.MessageContent,
       ],
       partials: [Partials.Channel],
+      allowedMentions: { parse: [], repliedUser: false },
     });
 
     this.client.once(Events.ClientReady, (client) => {
-      this.ready = true;
-      opts.onConnectionStateChange?.(true);
+      if (this.destroyed) return;
+      this.initialized = true;
+      this.setReady(true);
       opts.log.info(`Discord gateway connected as ${client.user.tag}`);
       void Promise.resolve(opts.onReady(client.user.tag)).catch((error) => {
         opts.log.warn(`Discord ready handler failed: ${errorMessage(error)}`);
@@ -278,16 +285,36 @@ export class DiscordClient {
       opts.log.error(`Discord client error: ${classifyDiscordError(error).message}`);
     });
 
-    this.client.on(Events.ShardDisconnect, (event) => {
-      this.ready = false;
-      opts.onConnectionStateChange?.(false);
-      opts.log.warn(`Discord shard disconnected (${event.code}); will resume`);
+    this.client.on(Events.ShardReconnecting, (shardId) => {
+      if (this.destroyed) return;
+      this.reconnectingShards.add(shardId);
+      this.setReady(false);
     });
-    this.client.on(Events.ShardResume, () => {
-      this.ready = true;
-      opts.onConnectionStateChange?.(true);
-      opts.log.info("Discord shard resumed");
+    this.client.on(Events.ShardDisconnect, (event, shardId) => {
+      if (this.destroyed) return;
+      // discord.js emits this only when the shard will NOT reconnect.
+      this.reconnectingShards.add(shardId);
+      this.setReady(false);
+      const error = toFriendlyError(Object.assign(
+        new Error(`Discord gateway closed with code ${event.code}.`),
+        { code: event.code },
+      ));
+      opts.log.error(error.message);
+      opts.onFatalError?.(error);
     });
+    const shardReady = (shardId: number): void => {
+      if (this.destroyed) return;
+      this.reconnectingShards.delete(shardId);
+      if (this.initialized && this.reconnectingShards.size === 0) this.setReady(true);
+    };
+    this.client.on(Events.ShardReady, shardReady);
+    this.client.on(Events.ShardResume, shardReady);
+  }
+
+  private setReady(ready: boolean): void {
+    if (this.ready === ready) return;
+    this.ready = ready;
+    this.opts.onConnectionStateChange?.(ready);
   }
 
   async login(): Promise<void> {
@@ -327,6 +354,22 @@ export class DiscordClient {
         chunk,
       );
     }
+  }
+
+  /** One durable-outbox chunk; the nonce is reused if acknowledgement is lost. */
+  async sendReplyChunk(
+    guildId: string,
+    channelId: string,
+    text: string,
+    nonce: string,
+  ): Promise<void> {
+    const channel = await this.fetchGuildChannel(guildId, channelId, true);
+    if (!("send" in channel)) throw new Error(`Channel ${channelId} is not text-sendable`);
+    await this.sendChunkWithRetry(channel as TextChannel | ThreadChannel, channelId, {
+      content: text,
+      nonce,
+      enforceNonce: true,
+    });
   }
 
   async sendApprovalRequest(
@@ -404,6 +447,7 @@ export class DiscordClient {
       await message.edit({
         content: resolvedInteractionContent(message.content, statusText),
         components: [],
+        allowedMentions: { parse: [], repliedUser: false },
       });
     } catch (error) {
       throw toFriendlyError(error);
@@ -444,6 +488,7 @@ export class DiscordClient {
   }
 
   async destroy(): Promise<void> {
+    this.destroyed = true;
     this.ready = false;
     try {
       await this.client.destroy();
@@ -534,7 +579,7 @@ export class DiscordClient {
     channelId: string,
     name: string,
     seedMessage?: string,
-  ): Promise<{ id: string; name: string }> {
+  ): Promise<{ id: string; name: string; seedError?: string }> {
     const channel = await this.fetchGuildChannel(guildId, channelId);
     if (!channel || channel.type !== ChannelType.GuildText) {
       throw new Error(
@@ -546,7 +591,24 @@ export class DiscordClient {
         name,
         autoArchiveDuration: 1440,
       });
-      if (seedMessage) await thread.send(seedMessage);
+      if (seedMessage) {
+        const chunks = chunkForDiscord(seedMessage);
+        let sent = 0;
+        try {
+          for (const chunk of chunks) {
+            await this.sendChunkWithRetry(thread, thread.id, chunk);
+            sent += 1;
+          }
+        } catch (error) {
+          // Creation succeeded. Return the identity so callers can recover
+          // the seed instead of retrying creation and leaving another thread.
+          return {
+            id: thread.id,
+            name: thread.name,
+            seedError: `Thread created, but only ${sent}/${chunks.length} seed messages were sent: ${classifyDiscordError(error).message}`,
+          };
+        }
+      }
       return { id: thread.id, name: thread.name };
     } catch (error) {
       throw toFriendlyError(error);
@@ -737,7 +799,10 @@ export class DiscordClient {
     let lastError: unknown;
     for (let attempt = 1; attempt <= SEND_ATTEMPTS; attempt += 1) {
       try {
-        return await channel.send(payload);
+        return await channel.send({
+          ...(typeof payload === "string" ? { content: payload } : payload),
+          allowedMentions: { parse: [], repliedUser: false },
+        });
       } catch (error) {
         lastError = error;
         // A permission or not-found failure will not fix itself; stop early.
@@ -809,6 +874,7 @@ export class DiscordClient {
     await interaction.editReply({
       content: resolvedInteractionContent(original, result.statusText),
       components: [],
+      allowedMentions: { parse: [], repliedUser: false },
     });
   }
 
@@ -871,6 +937,7 @@ export class DiscordClient {
     await interaction.editReply({
       content: resolvedInteractionContent(original, result.statusText),
       components: [],
+      allowedMentions: { parse: [], repliedUser: false },
     });
   }
 

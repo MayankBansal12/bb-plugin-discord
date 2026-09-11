@@ -96,6 +96,8 @@ export function clearStoredPairingState(db: PairingStateDatabase): void {
     db.prepare("DELETE FROM discord_posted_replies").run();
     db.prepare("DELETE FROM discord_posted_interactions").run();
     db.prepare("DELETE FROM discord_interaction_actions").run();
+    db.prepare("DELETE FROM discord_interaction_routes").run();
+    db.prepare("DELETE FROM discord_reply_outbox").run();
   })();
 }
 
@@ -260,6 +262,7 @@ export function resolveSpawnPermissionMode(
 export type DiscordErrorKind =
   | "invalid-token"
   | "disallowed-intents"
+  | "gateway-configuration"
   | "missing-members-intent"
   | "missing-permissions"
   | "not-found"
@@ -271,6 +274,7 @@ export type DiscordErrorKind =
 const NEEDS_CONFIGURATION: ReadonlySet<DiscordErrorKind> = new Set([
   "invalid-token",
   "disallowed-intents",
+  "gateway-configuration",
 ]);
 
 export function needsConfigurationFor(kind: DiscordErrorKind): boolean {
@@ -310,6 +314,13 @@ export function classifyDiscordError(error: unknown): ClassifiedDiscordError {
     };
   }
 
+  if (typeof code === "number" && [4010, 4011, 4012, 4013].includes(code)) {
+    return {
+      kind: "gateway-configuration",
+      message: `Discord rejected the gateway configuration (code ${code}). Check the bot's gateway settings, then reload the Discord plugin.`,
+      needsConfiguration: true,
+    };
+  }
   if (code === 4014 || text.includes("disallowed intents")) {
     return {
       kind: "disallowed-intents",
