@@ -2306,6 +2306,8 @@ export default async function plugin(bb: BbPluginApi) {
       removeInteractionThreadState(thread.id);
       return;
     }
+    // Revoke delivery before the notice can yield to a retry or reconnect.
+    removeThreadState(thread.id);
     if (isActiveMappedGuild(map.guild_id, effectiveGuildId())) {
       await sendToDiscord(
         map.guild_id,
@@ -2315,7 +2317,6 @@ export default async function plugin(bb: BbPluginApi) {
           : "🗑️ The linked bb thread was deleted. Mention me in this channel to start a new conversation.",
       );
     }
-    removeThreadState(thread.id);
   });
 
   // ---------------------------------------------------------------------

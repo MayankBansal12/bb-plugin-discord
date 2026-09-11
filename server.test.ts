@@ -112,6 +112,7 @@ async function fixture(t: TestContext, sqlite = new DatabaseSync(":memory:")) {
     sqlite, replies, configurationErrors, start, connect, close,
     failSends: (value: boolean) => { failingSends = value; },
     unpair: () => rpc.unpair!(),
+    deleteThread: () => events.get("thread.deleted")!({ thread: { ...thread } }),
     gatewayEvent: (code: number) => {
       (gateway as unknown as { client: Client }).client.emit(Events.ShardDisconnect,
         { code, reason: "", wasClean: true }, 0);
@@ -170,6 +171,36 @@ test("unpair removes queued replies so reconnect cannot deliver them", async (t)
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(h.replies.length, 0);
   assert.equal(h.sqlite.prepare("SELECT COUNT(*) AS count FROM discord_reply_outbox").get()!.count, 0);
+});
+
+test("thread deletion removes queued replies before waiting for its Discord notice", async (t) => {
+  const h = await fixture(t); await h.connect(); h.failSends(true);
+  await h.complete("Do not send after deletion.");
+  assert.equal(h.replies.length, 0);
+  assert.equal(h.sqlite.prepare("SELECT COUNT(*) AS count FROM discord_reply_outbox").get()!.count, 1);
+  h.failSends(false);
+
+  let finishNotice: () => void = () => {};
+  const pendingNotice = new Promise<void>((resolve) => { finishNotice = resolve; });
+  let noticeStarted = false;
+  t.mock.method(DiscordClient.prototype, "sendMessage", async (_guild: string, channel: string, text: string) => {
+    assert.equal(channel, "session-1");
+    assert.match(text, /linked bb thread was deleted/);
+    noticeStarted = true;
+    await pendingNotice;
+  });
+
+  const deleting = h.deleteThread();
+  try {
+    assert.equal(noticeStarted, true);
+    h.reconnect();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(h.replies, [], "a reconnect must not deliver output from a deleted thread");
+    assert.equal(h.sqlite.prepare("SELECT COUNT(*) AS count FROM discord_reply_outbox").get()!.count, 0);
+  } finally {
+    finishNotice();
+    await deleting;
+  }
 });
 
 test("post-login fatal gateway errors leave the supervisor in needs-configuration", async (t) => {
