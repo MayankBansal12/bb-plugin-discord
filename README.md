@@ -232,7 +232,11 @@ Destructive calls require an explicit confirmation argument. Administrative call
 - **The bot cannot create or reply in threads:** use the invite link again or grant **Create Public Threads** and **Send Messages in Threads** to the bot's role.
 - **A machine or model is unavailable:** update **Where requests run** in the Discord plugin settings.
 
-Saving a replacement token reconnects the gateway without `bb plugin reload`. Network reconnects use exponential backoff from two seconds up to one minute.
+Saving a replacement token reconnects the gateway without `bb plugin reload`. Network reconnects use exponential backoff from two seconds up to one minute. Fatal gateway configuration errors show an actionable failure instead of waiting for a connection that cannot resume.
+
+Final answers are queued in the plugin database before sending. Failed deliveries retry while connected and after a reconnect or plugin restart. Long replies resume from the first unacknowledged chunk; each stored bb output event is delivered independently, including consecutive identical answers. Discord nonces reduce duplicate sends when an acknowledgement is lost, but Discord only deduplicates nonces for a short window, so delivery is not an unlimited exactly-once guarantee.
+
+Pending reply text is retained for up to 30 days and cleared after successful delivery, unpairing, or deletion of its linked bb thread. Automatically relayed text and tool messages display mentions without notifying users or roles. Thread seeds use the same message-size limits; if a seed fails after thread creation, the tool returns the existing thread ID and a `seedError` so the caller can recover without creating another thread.
 
 Inspect plugin health and logs with:
 

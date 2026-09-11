@@ -213,7 +213,7 @@ export function registerDiscordTools(bb: BbPluginApi, deps: DiscordToolDeps): vo
   bb.agents.registerTool({
     name: "discord_create_thread",
     description:
-      "Create a thread under a Discord text channel, optionally seeding it with a first message.",
+      "Create a thread under a Discord text channel, optionally seeding it with text split into messages. If seeding fails, the result includes the created thread id and seedError; reuse that thread instead of creating another.",
     instructions:
       "Use discord_create_thread only when the user explicitly asks to create a separate Discord thread. Never create a replacement for the current Discord-backed conversation, which already owns a dedicated thread.",
     parameters: z.object({

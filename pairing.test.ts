@@ -89,6 +89,8 @@ test("unpair clears authorization and every guild-bound forwarding row", () => {
     "DELETE FROM discord_posted_replies",
     "DELETE FROM discord_posted_interactions",
     "DELETE FROM discord_interaction_actions",
+    "DELETE FROM discord_interaction_routes",
+    "DELETE FROM discord_reply_outbox",
   ]);
 });
 

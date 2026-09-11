@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ChannelType, Client, Events, MessagePayload } from "discord.js";
 import {
   chunkForDiscord,
   DiscordClient,
@@ -187,6 +188,7 @@ test("authorized approval clicks resolve and disable the original buttons", asyn
   assert.deepEqual(edited, {
     content: "Approval requested\n\n✅ Approved once.",
     components: [],
+    allowedMentions: { parse: [], repliedUser: false },
   });
 });
 
@@ -239,6 +241,7 @@ test("authorized question selections resolve and close the select menu", async (
   assert.deepEqual(edited, {
     content: "Which flow?\n\n✅ Answered by person.",
     components: [],
+    allowedMentions: { parse: [], repliedUser: false },
   });
 });
 
@@ -250,8 +253,8 @@ test("long messages are split without losing text or Unicode", async () => {
     archived: false,
     isDMBased: () => false,
     isThread: () => true,
-    send: async (payload: string) => {
-      sent.push(payload);
+    send: async (payload: { content: string }) => {
+      sent.push(payload.content);
       return { id: `message-${sent.length}` };
     },
   };
@@ -319,6 +322,7 @@ test("interaction controls can be closed after a typed or in-bb answer", async (
   assert.deepEqual(edited, {
     content: "Approval requested\n\n✅ Approved by person.",
     components: [],
+    allowedMentions: { parse: [], repliedUser: false },
   });
 });
 
@@ -440,6 +444,7 @@ test("stale approval clicks close the original Discord controls", async () => {
     content:
       "Approval requested\n\n⌛ This BB approval is no longer pending.",
     components: [],
+    allowedMentions: { parse: [], repliedUser: false },
   });
 });
 
@@ -592,4 +597,107 @@ test("an archived linked thread is reopened before sending", async () => {
 
   assert.equal(archiveValue, false);
   assert.equal(typed, true);
+});
+
+test("reconnect and re-identify pause delivery until every affected shard is ready", async () => {
+  const states: boolean[] = [];
+  const client = makeClient(undefined, { onConnectionStateChange: (ready) => states.push(ready) });
+  const internal = (client as unknown as { client: Client }).client;
+  internal.emit(Events.ClientReady, { user: { tag: "test-bot" } } as Client<true>);
+  internal.emit(Events.ShardReconnecting, 0);
+  internal.emit(Events.ShardReconnecting, 1);
+  assert.equal(client.isReady(), false);
+  internal.emit(Events.ShardReady, 0, undefined);
+  assert.equal(client.isReady(), false);
+  internal.emit(Events.ShardResume, 1, 0);
+  assert.equal(client.isReady(), true);
+  assert.deepEqual(states, [true, false, true]);
+  await client.destroy();
+});
+
+test("fatal closes after login report the classified error to the supervisor", async () => {
+  const errors: Error[] = [];
+  const client = makeClient(undefined, { onFatalError: (error) => errors.push(error) });
+  const internal = (client as unknown as { client: Client }).client;
+  internal.emit(Events.ClientReady, { user: { tag: "test-bot" } } as Client<true>);
+  internal.emit(Events.ShardDisconnect, { code: 4014, reason: "", wasClean: true }, 0);
+  assert.equal(client.isReady(), false);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0]!.message, /Message Content Intent/);
+  await client.destroy();
+  internal.emit(Events.ShardDisconnect, { code: 4014, reason: "", wasClean: true }, 0);
+  assert.equal(errors.length, 1, "teardown cannot restart a disposed gateway");
+});
+
+test("automatic replies and controls suppress mentions in serialized Discord payloads", async () => {
+  const client = makeClient();
+  const internal = (client as unknown as { client: Client }).client;
+  const sent: Record<string, unknown>[] = [];
+  const channel = {
+    client: internal,
+    guildId: "guild-1",
+    isDMBased: () => false,
+    isThread: () => false,
+    send: async (options: Parameters<typeof MessagePayload.create>[1]) => {
+      const payload = MessagePayload.create(channel as never, options);
+      payload.resolveBody();
+      sent.push({ ...payload.body! });
+      return { id: "message-1" };
+    },
+  };
+  (internal.channels as unknown as { fetch: () => Promise<unknown> }).fetch = async () => channel;
+  const text = "Quoted: <@123456789012345678> <@&123456789012345679> @everyone";
+  await client.sendMessage("guild-1", "channel-1", text);
+  await client.sendReplyChunk("guild-1", "channel-1", text, "nonce-1");
+  await client.sendApprovalRequest("guild-1", "channel-1", text, {
+    token: "0123456789abcdef01234567", decisions: ["allow_once", "deny"],
+  });
+  for (const payload of sent) {
+    assert.equal(payload.content, text);
+    assert.deepEqual(payload.allowed_mentions, { parse: [], replied_user: false });
+  }
+  assert.equal(sent[1]!.nonce, "nonce-1");
+  assert.equal(sent[1]!.enforce_nonce, true);
+  await client.destroy();
+});
+
+test("thread seeds use lossless chunking and report an existing thread on partial failure", async () => {
+  const client = makeClient();
+  const sent: string[] = [];
+  let created = 0;
+  let failAt = Infinity;
+  const channel = {
+    guildId: "guild-1",
+    type: ChannelType.GuildText,
+    isDMBased: () => false,
+    threads: {
+      create: async () => {
+        created += 1;
+        return {
+          id: `thread-${created}`, name: "Seeded thread",
+          send: async (payload: { content: string; allowedMentions: unknown }) => {
+            assert.ok(payload.content.length <= 2000);
+            assert.deepEqual(payload.allowedMentions, { parse: [], repliedUser: false });
+            if (sent.length === failAt) throw Object.assign(new Error("Missing permissions"), { code: 50013 });
+            sent.push(payload.content);
+            return { id: `message-${sent.length}` };
+          },
+        };
+      },
+    },
+  };
+  const internal = client as unknown as { client: { channels: { fetch: () => Promise<unknown> } } };
+  internal.client.channels.fetch = async () => channel;
+  const text = "seed ".repeat(800);
+  assert.deepEqual(await client.createThread("guild-1", "channel-1", "Seeded thread", text), {
+    id: "thread-1", name: "Seeded thread",
+  });
+  assert.equal(sent.join(""), text);
+  sent.length = 0;
+  failAt = 1;
+  const partial = await client.createThread("guild-1", "channel-1", "Seeded thread", text);
+  assert.equal(partial.id, "thread-2");
+  assert.match(partial.seedError!, /only 1\/3 seed messages/);
+  assert.equal(created, 2);
+  await client.destroy();
 });
